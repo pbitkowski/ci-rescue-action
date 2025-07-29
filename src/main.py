@@ -6,8 +6,7 @@ CI Rescue - AI-Powered GitHub Action for CI Failure Analysis
 import os
 import sys
 import json
-import re
-from typing import Dict, List, Optional, Tuple
+from typing import List, Optional
 from dataclasses import dataclass
 from github import Github
 from github.Repository import Repository
@@ -241,8 +240,10 @@ class CIRescue:
         primary_failure = failures[0]
         print(f"🤖 Analyzing failure in job '{primary_failure.job_name}'...")
         
-        analysis = self.openrouter.analyze_failure(primary_failure, self.max_tokens)
-        
+        analysis = self.openrouter.analyze_failure(
+            primary_failure, self.max_tokens
+        )
+
         # Add summary if multiple failures
         if len(failures) > 1:
             other_failures = "\n".join([
@@ -250,7 +251,7 @@ class CIRescue:
                 for f in failures[1:]
             ])
             analysis += f"\n\n**Additional Failures:**\n{other_failures}"
-        
+
         # Post comment to PR
         self.post_or_update_comment(pr, analysis)
         print("✅ Analysis complete!")

@@ -39,8 +39,8 @@ jobs:
       
       - name: Run linting
         run: |
-          pip install flake8
-          flake8 src/
+          pip install ruff
+          ruff check src/
   
   # AI-powered rescue job - runs only when other jobs fail
   ci-rescue:
@@ -52,6 +52,9 @@ jobs:
       pull-requests: write
       actions: read
     steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
       - name: AI Failure Analysis
         uses: ./  # Use local action for testing
         with:
