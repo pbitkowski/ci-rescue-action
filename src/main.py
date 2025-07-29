@@ -116,35 +116,45 @@ class CIRescue:
     
     def get_workflow_run_failures(self) -> List[FailureInfo]:
         """Get failure information from the current workflow run"""
-        repo = self.github.get_repo(self.repository)
-        run = repo.get_workflow_run(int(self.run_id))
-        
         failures = []
         
-        # Get all jobs for this run
-        jobs = run.get_jobs()
+        # Use GitHub REST API directly to get jobs
+        headers = {
+            "Authorization": f"token {self.github_token}",
+            "Accept": "application/vnd.github.v3+json"
+        }
+        
+        jobs_url = f"https://api.github.com/repos/{self.repository}/actions/runs/{self.run_id}/jobs"
+        response = requests.get(jobs_url, headers=headers)
+        
+        if response.status_code != 200:
+            print(f"Error getting jobs: {response.status_code}")
+            return failures
+        
+        jobs_data = response.json()
+        jobs = jobs_data.get('jobs', [])
         
         for job in jobs:
-            if job.conclusion in ["failure", "cancelled", "timed_out"]:
+            if job.get('conclusion') in ["failure", "cancelled", "timed_out"]:
                 # Extract error information from job steps
-                error_steps = [step for step in job.steps if step.conclusion == "failure"]
+                error_steps = [step for step in job.get('steps', []) if step.get('conclusion') == "failure"]
                 
                 for step in error_steps:
                     logs = ""
                     if self.include_logs:
-                        logs = self._get_job_logs(repo, job.id)
+                        logs = self._get_job_logs(job['id'])
                     
                     failures.append(FailureInfo(
-                        job_name=job.name,
-                        step_name=step.name,
-                        error_message=step.conclusion or "Unknown error",
+                        job_name=job.get('name', 'Unknown Job'),
+                        step_name=step.get('name', 'Unknown Step'),
+                        error_message=step.get('conclusion', 'Unknown error'),
                         logs=logs,
-                        conclusion=job.conclusion
+                        conclusion=job.get('conclusion', 'Unknown')
                     ))
         
         return failures
     
-    def _get_job_logs(self, repo: Repository, job_id: int) -> str:
+    def _get_job_logs(self, job_id: int) -> str:
         """Get logs for a specific job"""
         try:
             # Use GitHub API to get job logs
