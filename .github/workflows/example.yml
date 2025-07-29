@@ -1,0 +1,62 @@
+name: Example CI with AI Rescue
+on: 
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+      
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+      
+      - name: Run tests
+        run: |
+          # This might fail - that's where CI Rescue helps!
+          python -m pytest tests/
+  
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+      
+      - name: Run linting
+        run: |
+          pip install flake8
+          flake8 src/
+  
+  # AI-powered rescue job - runs only when other jobs fail
+  ci-rescue:
+    if: failure()
+    needs: [test, lint]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+      actions: read
+    steps:
+      - name: AI Failure Analysis
+        uses: ./  # Use local action for testing
+        with:
+          openrouter-api-key: ${{ secrets.OPENROUTER_API_KEY }}
+          model: "openai/gpt-4o-mini"
+          max-tokens: 1000
+          include-logs: true
+          comment-mode: "update-existing"

@@ -1,0 +1,54 @@
+name: 'CI Rescue - AI-Powered Failure Analysis'
+description: 'Analyzes CI failures and provides intelligent PR comments with fix suggestions using AI'
+author: 'Your Name'
+branding:
+  icon: 'life-buoy'
+  color: 'blue'
+
+inputs:
+  github-token:
+    description: 'GitHub token for API access'
+    required: true
+    default: ${{ github.token }}
+  openrouter-api-key:
+    description: 'OpenRouter API key for LLM access'
+    required: true
+  model:
+    description: 'OpenRouter model to use'
+    required: false
+    default: 'openai/gpt-4o-mini'
+  max-tokens:
+    description: 'Maximum tokens for LLM response'
+    required: false
+    default: '1000'
+  include-logs:
+    description: 'Whether to include job logs in analysis'
+    required: false
+    default: 'true'
+  comment-mode:
+    description: 'How to handle comments: create-new, update-existing, or replace'
+    required: false
+    default: 'update-existing'
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Setup Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r ${{ github.action_path }}/requirements.txt
+      shell: bash
+    - name: Run CI Rescue
+      run: python ${{ github.action_path }}/src/main.py
+      shell: bash
+      env:
+        INPUT_GITHUB_TOKEN: ${{ inputs.github-token }}
+        INPUT_OPENROUTER_API_KEY: ${{ inputs.openrouter-api-key }}
+        INPUT_MODEL: ${{ inputs.model }}
+        INPUT_MAX_TOKENS: ${{ inputs.max-tokens }}
+        INPUT_INCLUDE_LOGS: ${{ inputs.include-logs }}
+        INPUT_COMMENT_MODE: ${{ inputs.comment-mode }}
