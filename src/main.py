@@ -9,7 +9,6 @@ import json
 from typing import List, Optional
 from dataclasses import dataclass
 from github import Github
-from github.Repository import Repository
 from github.PullRequest import PullRequest
 import requests
 
@@ -22,6 +21,8 @@ class FailureInfo:
     error_message: str
     logs: str
     conclusion: str
+    full_logs: str = ""  # Full logs for better context
+    error_details: str = ""  # Extracted specific error details
 
 
 class OpenRouterClient:
@@ -35,25 +36,35 @@ class OpenRouterClient:
     def analyze_failure(self, failure_info: FailureInfo, max_tokens: int = 1000) -> str:
         """Analyze CI failure and provide suggestions"""
         
-        prompt = f"""You are a helpful CI/CD assistant. Analyze this GitHub Actions workflow failure and provide a concise, actionable comment for the pull request.
+        # Extract specific error details from logs
+        error_context = self._extract_error_context(failure_info.logs)
+        
+        prompt = f"""You are an expert CI/CD assistant. Analyze this GitHub Actions workflow failure and provide a concise, actionable comment for the pull request.
 
-**Job:** {failure_info.job_name}
-**Step:** {failure_info.step_name}
-**Status:** {failure_info.conclusion}
+**Failure Context:**
+- Job: {failure_info.job_name}
+- Step: {failure_info.step_name}
+- Status: {failure_info.conclusion}
 
-**Error Message:**
-{failure_info.error_message}
+**Error Details:**
+{error_context}
 
-**Relevant Logs:**
-{failure_info.logs[:2000]}  # Truncate logs to avoid token limits
+**Recent Log Output:**
+```
+{failure_info.logs[-1500:]}  # Show recent logs
+```
 
 Please provide:
-1. A brief explanation of what went wrong
-2. Specific steps to fix the issue
-3. Any relevant code changes needed
+1. **Root Cause**: Identify the specific error (e.g., syntax error, missing dependency, test failure, linting issue)
+2. **Solution**: Provide clear, actionable steps to fix the issue
+3. **Code Fix**: If applicable, suggest specific code changes or commands
 
-Format your response as a GitHub comment in markdown. Be concise but helpful.
-Start with "🚨 **CI Failure Analysis**" as the header."""
+Be specific about:
+- File names and line numbers if mentioned in logs
+- Exact error messages and their meaning
+- Command-line fixes when possible
+
+Format as a helpful GitHub comment in markdown. Start with "🚨 **CI Failure Analysis**"."""
 
         headers = {
             "Authorization": f"Bearer {self.api_key}",
@@ -88,6 +99,30 @@ Start with "🚨 **CI Failure Analysis**" as the header."""
             
         except Exception as e:
             return f"🚨 **CI Failure Analysis**\n\n❌ Failed to analyze the error with AI: {str(e)}\n\n**Manual Review Needed:**\nJob `{failure_info.job_name}` failed at step `{failure_info.step_name}` with status `{failure_info.conclusion}`.\n\nPlease check the logs for more details."
+        
+    def _extract_error_context(self, logs: str) -> str:
+        """Extract key error information from logs"""
+        if not logs:
+            return "No logs available"
+        
+        error_indicators = [
+            "ERROR", "FAILED", "Error:", "error:", "Exception:", "Traceback",
+            "TabError:", "SyntaxError:", "ImportError:", "ModuleNotFoundError:",
+            "AssertionError:", "##[error]", "FAIL:", "FAILURE:", "Remove unused import:"
+        ]
+        
+        lines = logs.split('\n')
+        error_lines = []
+        
+        for line in lines:
+            if any(indicator in line for indicator in error_indicators):
+                error_lines.append(line.strip())
+        
+        if error_lines:
+            return "\n".join(error_lines[-5:])  # Last 5 error lines
+        else:
+            # Fallback to last few lines of logs
+            return "\n".join([line.strip() for line in lines[-10:] if line.strip()])
 
 
 class CIRescue:
@@ -167,9 +202,9 @@ class CIRescue:
             response = requests.get(url, headers=headers)
             
             if response.status_code == 200:
-                # Return last 1000 characters of logs to avoid token limits
+                # Return last 2000 characters of logs for better context
                 logs = response.text
-                return logs[-1000:] if len(logs) > 1000 else logs
+                return logs[-2000:] if len(logs) > 2000 else logs
             else:
                 return f"Could not retrieve logs (status: {response.status_code})"
                 
