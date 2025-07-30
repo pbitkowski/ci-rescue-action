@@ -37,8 +37,11 @@ class OpenRouterClient:
         """Analyze CI failure and provide suggestions"""
         
         # Extract specific error details from logs
+        print(f"🔍 Failure info: {failure_info}")
         error_context = self._extract_error_context(failure_info.logs)
         
+        print(f"🔍 Analyzing failure in job '{failure_info.logs}'...")
+
         prompt = f"""You are an expert CI/CD assistant. Analyze this GitHub Actions workflow failure and provide a concise, actionable comment for the pull request.
 
 **Failure Context:**
@@ -117,7 +120,7 @@ Finally, if the failure is related to specific file(s) (e.g. test failures, lint
             return f"🚨 **CI Failure Analysis**\n\n❌ Failed to analyze the error with AI: {str(e)}\n\n**Manual Review Needed:**\nJob `{failure_info.job_name}` failed at step `{failure_info.step_name}` with status `{failure_info.conclusion}`.\n\nPlease check the logs for more details."
         
     def _extract_error_context(self, logs: str) -> str:
-        """Extract key error information from logs"""
+        """Extract key error information from logs with surrounding context"""
         if not logs:
             return "No logs available"
         
@@ -128,17 +131,57 @@ Finally, if the failure is related to specific file(s) (e.g. test failures, lint
         ]
         
         lines = logs.split('\n')
-        error_lines = []
+        error_line_indices = []
         
-        for line in lines:
-            if any(indicator in line for indicator in error_indicators):
-                error_lines.append(line.strip())
+        # Find all lines with error indicators (case-insensitive)
+        for i, line in enumerate(lines):
+            if any(indicator.lower() in line.lower() for indicator in error_indicators):
+                error_line_indices.append(i)
         
-        if error_lines:
-            return "\n".join(error_lines[-5:])  # Last 5 error lines
-        else:
+        if not error_line_indices:
             # Fallback to last few lines of logs
             return "\n".join([line.strip() for line in lines[-10:] if line.strip()])
+        
+        # Create context ranges (5 lines before and after each error)
+        context_ranges = []
+        for error_idx in error_line_indices:
+            start = max(0, error_idx - 5) 
+            end = min(len(lines), error_idx + 6)  # +6 because range is exclusive
+            context_ranges.append((start, end, error_idx))
+        print(f"🔍 Context ranges: {context_ranges}")
+
+        # Merge overlapping ranges
+        merged_ranges = []
+        if not context_ranges:
+            return
+        
+        current_start, current_end, _ = sorted(context_ranges)[0]
+
+        for next_start, next_end, error_idx in sorted(context_ranges)[1:]:
+            if next_start < current_end:  # Merge only if truly overlapping, not adjacent
+                current_end = max(current_end, next_end)
+            else:
+                merged_ranges.append((current_start, current_end, error_idx))
+                current_start, current_end = next_start, next_end
+        
+        merged_ranges.append((current_start, current_end, error_idx))
+        
+        # Extract context blocks
+        context_blocks = []
+        for start, end, error_idx in merged_ranges:
+            block_lines = []
+            for i in range(start, end):
+                if i < len(lines):
+                    block_lines.append(lines[i].rstrip())
+            
+            if block_lines:
+                context_blocks.append("\n".join(block_lines))
+        
+        # Limit output to avoid overwhelming the AI (max 3 context blocks)
+        if len(context_blocks) > 3:
+            context_blocks = context_blocks[-3:]  # Take the last 3 error contexts
+            
+        return "\n\n---\n\n".join(context_blocks)
 
 
 class CIRescue:
@@ -219,8 +262,9 @@ class CIRescue:
             
             if response.status_code == 200:
                 # Return last 2000 characters of logs for better context
+                # TODO: make this configurable - we might more logs than 5000
                 logs = response.text
-                return logs[-2000:] if len(logs) > 2000 else logs
+                return logs[-5000:] if len(logs) > 5000 else logs
             else:
                 return f"Could not retrieve logs (status: {response.status_code})"
                 

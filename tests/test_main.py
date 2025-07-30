@@ -21,7 +21,207 @@ class TestOpenRouterClient(unittest.TestCase):
         self.client = OpenRouterClient("test-api-key", "test-model")
 
     def test_fail(self):
-	self.assertEqual(1,2)
+	    self.assertEqual(1,2)
+
+    def test_extract_error_context_empty_logs(self):
+        """Test _extract_error_context with empty logs"""
+        result = self.client._extract_error_context("")
+        self.assertEqual(result, "No logs available")
+    
+    def test_extract_error_context_no_errors(self):
+        """Test _extract_error_context when no error indicators are found"""
+        logs = """Starting application
+Loading configuration
+Processing request
+Application ready
+Shutting down gracefully"""
+        
+        result = self.client._extract_error_context(logs)
+        # Should return last 10 lines as fallback
+        self.assertIn("Application ready", result)
+        self.assertIn("Shutting down gracefully", result)
+    
+    def test_extract_error_context_single_error(self):
+        """Test _extract_error_context with a single error"""
+        logs = """Line 1: Starting process
+Line 2: Loading module
+Line 3: Initializing database
+Line 4: Connecting to server
+Line 5: Processing data
+Line 6: ERROR: Connection timeout
+Line 7: Retrying connection
+Line 8: Failed to recover
+Line 9: Shutting down
+Line 10: Process ended"""
+        
+        result = self.client._extract_error_context(logs)
+        
+        # Should contain 5 lines before and 5 lines after the error
+        self.assertIn("Line 1: Starting process", result)  # 5 lines before
+        self.assertIn("Line 6: ERROR: Connection timeout", result)  # error line
+        self.assertIn("Line 10: Process ended", result)  # 5 lines after (only 4 available)
+        
+        # Should not contain extra lines
+        lines = result.split('\n')
+        self.assertEqual(len(lines), 10)  # 10 total lines in context
+    
+    def test_extract_error_context_multiple_errors_separate(self):
+        """Test _extract_error_context with multiple separate errors"""
+        logs = """Line 1: Starting
+Line 2: ERROR: First error
+Line 3: Recovery attempt
+Line 4: Normal operation
+Line 5: Normal operation
+Line 6: Normal operation
+Line 7: Normal operation
+Line 8: Normal operation
+Line 9: Normal operation
+Line 10: Normal operation
+Line 11: Normal operation
+Line 12: Normal operation
+Line 13: FAILED: Second error
+Line 14: Cleanup
+Line 15: Finished"""
+        
+        result = self.client._extract_error_context(logs)
+        
+        # Should contain two separate context blocks
+        self.assertIn("---", result)  # Separator between blocks
+        self.assertIn("ERROR: First error", result)
+        self.assertIn("FAILED: Second error", result)
+    
+    def test_extract_error_context_overlapping_errors(self):
+        """Test _extract_error_context with overlapping error contexts"""
+        logs = """Line 1: Starting
+Line 2: Loading
+Line 3: ERROR: First error
+Line 4: Processing
+Line 5: FAILED: Second error  
+Line 6: Recovery
+Line 7: Finished"""
+        
+        result = self.client._extract_error_context(logs)
+        
+        # Should merge overlapping ranges into one block
+        self.assertNotIn("---", result)  # No separator since ranges merged
+        self.assertIn("ERROR: First error", result)
+        self.assertIn("FAILED: Second error", result)
+        
+        # Should contain all lines since they're close together
+        lines = result.split('\n')
+        self.assertEqual(len(lines), 7)  # All 7 lines included
+    
+    def test_extract_error_context_case_insensitive(self):
+        """Test case-insensitive error detection"""
+        logs = """Line 1: Starting
+Line 2: error: lowercase error
+Line 3: Normal
+Line 4: Error: Mixed case error
+Line 5: Normal
+Line 6: ERROR: Uppercase error
+Line 7: Finished"""
+        
+        result = self.client._extract_error_context(logs)
+        
+        # Should find all three error variations
+        self.assertIn("error: lowercase error", result)
+        self.assertIn("Error: Mixed case error", result) 
+        self.assertIn("ERROR: Uppercase error", result)
+    
+    def test_extract_error_context_different_indicators(self):
+        """Test different types of error indicators"""
+        logs = """Line 1: Starting
+Line 2: Exception: Runtime exception
+Line 3: Normal
+Line 4: Traceback (most recent call last):
+Line 5: Normal
+Line 6: SyntaxError: Invalid syntax
+Line 7: Normal
+Line 8: ##[error] GitHub Actions error
+Line 9: Normal
+Line 10: FAILURE: Build failed
+Line 11: Finished"""
+        
+        result = self.client._extract_error_context(logs)
+        
+        # Should detect various error types
+        self.assertIn("Exception: Runtime exception", result)
+        self.assertIn("Traceback", result)
+        self.assertIn("SyntaxError", result)
+        self.assertIn("##[error]", result)
+        self.assertIn("FAILURE:", result)
+    
+    def test_extract_error_context_error_at_start(self):
+        """Test error at the very beginning of logs"""
+        logs = """ERROR: Error at start
+Line 2: Recovery
+Line 3: Normal
+Line 4: Normal
+Line 5: Normal
+Line 6: Finished"""
+        
+        result = self.client._extract_error_context(logs)
+        
+        # Should handle error at start gracefully (no lines before)
+        self.assertIn("ERROR: Error at start", result)
+        self.assertIn("Line 6: Finished", result)  # Should still get 5 lines after
+    
+    def test_extract_error_context_error_at_end(self):
+        """Test error at the very end of logs"""
+        logs = """Line 1: Starting
+Line 2: Normal
+Line 3: Normal
+Line 4: Normal
+Line 5: Normal
+Line 6: ERROR: Error at end"""
+        
+        result = self.client._extract_error_context(logs)
+        
+        # Should handle error at end gracefully (no lines after)
+        self.assertIn("Line 1: Starting", result)  # Should get 5 lines before
+        self.assertIn("ERROR: Error at end", result)
+    
+    def test_extract_error_context_whitespace_handling(self):
+        """Test proper whitespace handling with rstrip()"""
+        logs = """Line 1: Normal    
+Line 2: ERROR: Error with trailing spaces   \t
+Line 3: Normal\n\n
+Line 4: Finished"""
+        
+        result = self.client._extract_error_context(logs)
+        
+        # Should remove trailing whitespace but preserve structure
+        lines = result.split('\n')
+        for line in lines:
+            self.assertFalse(line.endswith(' '))  # No trailing spaces
+            self.assertFalse(line.endswith('\t'))  # No trailing tabs
+        
+        self.assertIn("ERROR: Error with trailing spaces", result)
+    
+    def test_extract_error_context_limit_blocks(self):
+        """Test limiting to max 3 context blocks"""
+        # Create logs with 5 separate errors (far apart)
+        logs_parts = []
+        for i in range(5):
+            logs_parts.append(f"Section {i+1} start")
+            for j in range(10):  # Add padding lines
+                logs_parts.append(f"Section {i+1} line {j+1}")
+            logs_parts.append(f"ERROR: Error {i+1}")
+            for j in range(10):  # Add more padding
+                logs_parts.append(f"Section {i+1} end line {j+1}")
+        
+        logs = '\n'.join(logs_parts)
+        result = self.client._extract_error_context(logs)
+        
+        # Should only contain last 3 errors
+        self.assertNotIn("ERROR: Error 1", result)
+        self.assertNotIn("ERROR: Error 2", result)
+        self.assertIn("ERROR: Error 3", result)
+        self.assertIn("ERROR: Error 4", result)
+        self.assertIn("ERROR: Error 5", result)
+        
+        # Should have 2 separators (3 blocks)
+        self.assertEqual(result.count("---"), 2)
 
     def test_init(self):
         """Test client initialization"""
