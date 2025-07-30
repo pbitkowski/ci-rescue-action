@@ -9,7 +9,6 @@ import json
 from typing import List, Optional
 from dataclasses import dataclass
 from github import Github
-from github.Repository import Repository
 from github.PullRequest import PullRequest
 import requests
 
@@ -22,6 +21,8 @@ class FailureInfo:
     error_message: str
     logs: str
     conclusion: str
+    full_logs: str = ""  # Full logs for better context
+    error_details: str = ""  # Extracted specific error details
 
 
 class OpenRouterClient:
@@ -35,25 +36,54 @@ class OpenRouterClient:
     def analyze_failure(self, failure_info: FailureInfo, max_tokens: int = 1000) -> str:
         """Analyze CI failure and provide suggestions"""
         
-        prompt = f"""You are a helpful CI/CD assistant. Analyze this GitHub Actions workflow failure and provide a concise, actionable comment for the pull request.
+        # Extract specific error details from logs
+        print(f"🔍 Failure info: {failure_info}")
+        error_context = self._extract_error_context(failure_info.logs)
+        
+        print(f"🔍 Analyzing failure in job '{failure_info.logs}'...")
 
-**Job:** {failure_info.job_name}
-**Step:** {failure_info.step_name}
-**Status:** {failure_info.conclusion}
+        prompt = f"""You are an expert CI/CD assistant. Analyze this GitHub Actions workflow failure and provide a concise, actionable comment for the pull request.
 
-**Error Message:**
-{failure_info.error_message}
+**Failure Context:**
+- Job: {failure_info.job_name}
+- Step: {failure_info.step_name}
+- Status: {failure_info.conclusion}
 
-**Relevant Logs:**
-{failure_info.logs[:2000]}  # Truncate logs to avoid token limits
+**Error Details:**
+{error_context}
+
+**Recent Log Output:**
+```
+{failure_info.logs[-1500:]}  # Show recent logs
+```
 
 Please provide:
-1. A brief explanation of what went wrong
-2. Specific steps to fix the issue
-3. Any relevant code changes needed
+1. **Root Cause**: Identify the specific error (e.g., syntax error, missing dependency, test failure, linting issue)
+2. **Solution**: Provide clear, actionable steps to fix the issue
+3. **Code Fix**: If applicable, suggest specific code changes or commands
 
-Format your response as a GitHub comment in markdown. Be concise but helpful.
-Start with "🚨 **CI Failure Analysis**" as the header."""
+Be specific about:
+- File names and line numbers if mentioned in logs. **Pay close attention to error formats like `E  File \"/path/to/file.py\", line 24` to extract the exact line number.**
+- Exact error messages and their meaning
+- Command-line fixes when possible
+
+Format as a helpful GitHub comment in markdown. Start with \"🚨 **CI Failure Analysis**\".
+
+Finally, if the failure is related to specific file(s) (e.g. test failures, linting errors), provide annotations in a JSON block at the very end of your response, formatted like this. Do not include anything else in this block.
+<<<CI-RESCUE-ANNOTATIONS>>>
+{{
+  "annotations": [
+    {{
+      "path": "path/to/offending_file.py",
+      "start_line": 42,
+      "end_line": 42,
+      "annotation_level": "failure",
+      "message": "A brief explanation of why this line is causing a failure."
+    }}
+  ]
+}}
+<<<CI-RESCUE-ANNOTATIONS>>>
+"""
 
         headers = {
             "Authorization": f"Bearer {self.api_key}",
@@ -88,6 +118,70 @@ Start with "🚨 **CI Failure Analysis**" as the header."""
             
         except Exception as e:
             return f"🚨 **CI Failure Analysis**\n\n❌ Failed to analyze the error with AI: {str(e)}\n\n**Manual Review Needed:**\nJob `{failure_info.job_name}` failed at step `{failure_info.step_name}` with status `{failure_info.conclusion}`.\n\nPlease check the logs for more details."
+        
+    def _extract_error_context(self, logs: str) -> str:
+        """Extract key error information from logs with surrounding context"""
+        if not logs:
+            return "No logs available"
+        
+        error_indicators = [
+            "ERROR", "FAILED", "Error:", "error:", "Exception:", "Traceback",
+            "TabError:", "SyntaxError:", "ImportError:", "ModuleNotFoundError:",
+            "AssertionError:", "##[error]", "FAIL:", "FAILURE:", "Remove unused import:"
+        ]
+        
+        lines = logs.split('\n')
+        error_line_indices = []
+        
+        # Find all lines with error indicators (case-insensitive)
+        for i, line in enumerate(lines):
+            if any(indicator.lower() in line.lower() for indicator in error_indicators):
+                error_line_indices.append(i)
+        
+        if not error_line_indices:
+            # Fallback to last few lines of logs
+            return "\n".join([line.strip() for line in lines[-10:] if line.strip()])
+        
+        # Create context ranges (5 lines before and after each error)
+        context_ranges = []
+        for error_idx in error_line_indices:
+            start = max(0, error_idx - 5) 
+            end = min(len(lines), error_idx + 6)  # +6 because range is exclusive
+            context_ranges.append((start, end, error_idx))
+        print(f"🔍 Context ranges: {context_ranges}")
+
+        # Merge overlapping ranges
+        merged_ranges = []
+        if not context_ranges:
+            return
+        
+        current_start, current_end, _ = sorted(context_ranges)[0]
+
+        for next_start, next_end, error_idx in sorted(context_ranges)[1:]:
+            if next_start < current_end:  # Merge only if truly overlapping, not adjacent
+                current_end = max(current_end, next_end)
+            else:
+                merged_ranges.append((current_start, current_end, error_idx))
+                current_start, current_end = next_start, next_end
+        
+        merged_ranges.append((current_start, current_end, error_idx))
+        
+        # Extract context blocks
+        context_blocks = []
+        for start, end, error_idx in merged_ranges:
+            block_lines = []
+            for i in range(start, end):
+                if i < len(lines):
+                    block_lines.append(lines[i].rstrip())
+            
+            if block_lines:
+                context_blocks.append("\n".join(block_lines))
+        
+        # Limit output to avoid overwhelming the AI (max 3 context blocks)
+        if len(context_blocks) > 3:
+            context_blocks = context_blocks[-3:]  # Take the last 3 error contexts
+            
+        return "\n\n---\n\n".join(context_blocks)
 
 
 class CIRescue:
@@ -116,35 +210,45 @@ class CIRescue:
     
     def get_workflow_run_failures(self) -> List[FailureInfo]:
         """Get failure information from the current workflow run"""
-        repo = self.github.get_repo(self.repository)
-        run = repo.get_workflow_run(int(self.run_id))
-        
         failures = []
         
-        # Get all jobs for this run
-        jobs = run.get_jobs()
+        # Use GitHub REST API directly to get jobs
+        headers = {
+            "Authorization": f"token {self.github_token}",
+            "Accept": "application/vnd.github.v3+json"
+        }
+        
+        jobs_url = f"https://api.github.com/repos/{self.repository}/actions/runs/{self.run_id}/jobs"
+        response = requests.get(jobs_url, headers=headers)
+        
+        if response.status_code != 200:
+            print(f"Error getting jobs: {response.status_code}")
+            return failures
+        
+        jobs_data = response.json()
+        jobs = jobs_data.get('jobs', [])
         
         for job in jobs:
-            if job.conclusion in ["failure", "cancelled", "timed_out"]:
+            if job.get('conclusion') in ["failure", "cancelled", "timed_out"]:
                 # Extract error information from job steps
-                error_steps = [step for step in job.steps if step.conclusion == "failure"]
+                error_steps = [step for step in job.get('steps', []) if step.get('conclusion') == "failure"]
                 
                 for step in error_steps:
                     logs = ""
                     if self.include_logs:
-                        logs = self._get_job_logs(repo, job.id)
+                        logs = self._get_job_logs(job['id'])
                     
                     failures.append(FailureInfo(
-                        job_name=job.name,
-                        step_name=step.name,
-                        error_message=step.conclusion or "Unknown error",
+                        job_name=job.get('name', 'Unknown Job'),
+                        step_name=step.get('name', 'Unknown Step'),
+                        error_message=step.get('conclusion', 'Unknown error'),
                         logs=logs,
-                        conclusion=job.conclusion
+                        conclusion=job.get('conclusion', 'Unknown')
                     ))
         
         return failures
     
-    def _get_job_logs(self, repo: Repository, job_id: int) -> str:
+    def _get_job_logs(self, job_id: int) -> str:
         """Get logs for a specific job"""
         try:
             # Use GitHub API to get job logs
@@ -157,9 +261,10 @@ class CIRescue:
             response = requests.get(url, headers=headers)
             
             if response.status_code == 200:
-                # Return last 1000 characters of logs to avoid token limits
+                # Return last 2000 characters of logs for better context
+                # TODO: make this configurable - we might more logs than 5000
                 logs = response.text
-                return logs[-1000:] if len(logs) > 1000 else logs
+                return logs[-5000:] if len(logs) > 5000 else logs
             else:
                 return f"Could not retrieve logs (status: {response.status_code})"
                 
@@ -214,6 +319,154 @@ class CIRescue:
             
         except Exception as e:
             print(f"Error posting comment: {e}")
+
+    def _parse_analysis_with_annotations(self, analysis_text: str) -> (str, Optional[List[dict]]):
+        """Parse the AI response to separate the comment from annotations."""
+        marker = "<<<CI-RESCUE-ANNOTATIONS>>>"
+        print(f"🔍 Parsing AI response for annotations (length: {len(analysis_text)} chars)...")
+        
+        if marker in analysis_text:
+            print("📍 Found annotation marker in AI response")
+            parts = analysis_text.split(marker)
+            comment = parts[0]
+            
+            try:
+                # The JSON content is between the markers
+                annotations_json_str = parts[1]
+                print(f"📋 Raw annotation JSON: {annotations_json_str[:200]}..." if len(annotations_json_str) > 200 else f"📋 Raw annotation JSON: {annotations_json_str}")
+                
+                annotations_data = json.loads(annotations_json_str)
+                annotations = annotations_data.get("annotations")
+                
+                if annotations:
+                    print(f"✅ Successfully parsed {len(annotations)} annotation(s)")
+                    for i, annotation in enumerate(annotations):
+                        print(f"   📌 Annotation {i+1}: {annotation.get('path', 'unknown')}:{annotation.get('start_line', 'unknown')} - {annotation.get('message', 'no message')[:50]}...")
+                else:
+                    print("⚠️  No annotations found in parsed JSON")
+                    
+                return comment.strip(), annotations
+                
+            except (json.JSONDecodeError, IndexError, AttributeError) as e:
+                print(f"❌ Failed to parse annotation JSON: {e}")
+                print(f"   Raw content: {parts[1][:100] if len(parts) > 1 else 'no content'}...")
+                # If parsing fails, return the whole text as comment
+                return analysis_text.replace(marker, ""), None
+        else:
+            print("ℹ️  No annotation markers found in AI response")
+            
+        return analysis_text, None
+
+    def format_annotations_for_comment(self, annotations: List[dict]) -> str:
+        """Format annotations as markdown for inclusion in PR comment."""
+        if not annotations:
+            return ""
+        
+        print(f"📝 Formatting {len(annotations)} annotations for PR comment")
+        
+        formatted = "\n\n## 📍 **Code Annotations**\n\n"
+        
+        for i, annotation in enumerate(annotations, 1):
+            path = annotation.get('path', 'unknown file')
+            start_line = annotation.get('start_line', annotation.get('line', 'unknown'))
+            end_line = annotation.get('end_line', start_line)
+            message = annotation.get('message', 'No message provided')
+            level = annotation.get('annotation_level', 'notice')
+            
+            # Choose emoji based on annotation level
+            level_emoji = {
+                'failure': '❌',
+                'error': '🚨', 
+                'warning': '⚠️',
+                'notice': 'ℹ️'
+            }.get(level, '📝')
+            
+            if start_line == end_line:
+                line_info = f"Line {start_line}"
+            else:
+                line_info = f"Lines {start_line}-{end_line}"
+            
+            formatted += f"{level_emoji} **{path}** ({line_info})\n"
+            formatted += f"   {message}\n\n"
+        
+        return formatted
+
+    def post_line_annotations(self, pr: PullRequest, annotations: List[dict]) -> None:
+        """Post annotations as review comments on specific lines of code."""
+        if not annotations:
+            print("ℹ️  No line annotations to post")
+            return
+        
+        print(f"📌 Posting {len(annotations)} line annotations to PR #{pr.number}")
+        
+        try:
+            # Get the latest commit SHA from the PR
+            commit_sha = pr.head.sha
+            print(f"🔍 Using commit SHA: {commit_sha}")
+            
+            # Prepare review comments
+            review_comments = []
+            
+            for i, annotation in enumerate(annotations):
+                path = annotation.get('path')
+                line = annotation.get('start_line', annotation.get('line'))
+                message = annotation.get('message', 'No message provided')
+                level = annotation.get('annotation_level', 'notice')
+                
+                if not path or not line:
+                    print(f"⚠️  Skipping annotation {i+1}: missing path or line number")
+                    continue
+                
+                # Add emoji based on level
+                level_emoji = {
+                    'failure': '❌',
+                    'error': '🚨', 
+                    'warning': '⚠️',
+                    'notice': 'ℹ️'
+                }.get(level, '📝')
+                
+                formatted_message = f"{level_emoji} **CI Rescue Analysis**\n\n{message}"
+                
+                review_comments.append({
+                    'path': path,
+                    'line': int(line),
+                    'body': formatted_message
+                })
+                
+                print(f"   📍 Queued annotation for {path}:{line}")
+            
+            if not review_comments:
+                print("⚠️  No valid annotations to post (missing path/line info)")
+                return
+            
+            # Create a review with the comments
+            try:
+                review = pr.create_review(
+                    commit=pr.get_commits().reversed[0],  # Latest commit
+                    event='COMMENT',
+                    comments=review_comments
+                )
+                print(f"✅ Posted {len(review_comments)} line annotations as review #{review.id}")
+                
+            except Exception as e:
+                print(f"❌ Failed to create review with line comments: {e}")
+                print("🔄 Falling back to individual comments...")
+                
+                # Fallback: Post individual comments
+                for comment_data in review_comments:
+                    try:
+                        pr.create_review_comment(
+                            body=comment_data['body'],
+                            commit=pr.get_commits().reversed[0],
+                            path=comment_data['path'],
+                            line=comment_data['line']
+                        )
+                        print(f"   ✅ Posted comment on {comment_data['path']}:{comment_data['line']}")
+                    except Exception as comment_error:
+                        print(f"   ❌ Failed to post comment on {comment_data['path']}:{comment_data['line']}: {comment_error}")
+                        
+        except Exception as e:
+            print(f"❌ Error posting line annotations: {e}")
     
     def run(self) -> None:
         """Main execution method"""
@@ -240,9 +493,18 @@ class CIRescue:
         primary_failure = failures[0]
         print(f"🤖 Analyzing failure in job '{primary_failure.job_name}'...")
         
-        analysis = self.openrouter.analyze_failure(
+        analysis_text = self.openrouter.analyze_failure(
             primary_failure, self.max_tokens
         )
+        
+        comment, annotations = self._parse_analysis_with_annotations(analysis_text)
+
+        # Add annotations to comment summary if available
+        if annotations:
+            print(f"📌 Adding {len(annotations)} annotations to PR comment summary")
+            comment += self.format_annotations_for_comment(annotations)
+        else:
+            print("ℹ️  No annotations to add to PR comment")
 
         # Add summary if multiple failures
         if len(failures) > 1:
@@ -250,10 +512,15 @@ class CIRescue:
                 f"- **{f.job_name}** → {f.step_name} ({f.conclusion})"
                 for f in failures[1:]
             ])
-            analysis += f"\n\n**Additional Failures:**\n{other_failures}"
+            comment += f"\n\n**Additional Failures:**\n{other_failures}"
 
         # Post comment to PR
-        self.post_or_update_comment(pr, analysis)
+        self.post_or_update_comment(pr, comment)
+
+        # Post line-by-line annotations
+        if annotations:
+            self.post_line_annotations(pr, annotations)
+
         print("✅ Analysis complete!")
 
 
