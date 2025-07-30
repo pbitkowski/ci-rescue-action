@@ -4,7 +4,7 @@ Tests for CI Rescue action
 """
 
 import unittest
-from unittest.mock import Mock, patch, MagicMock
+from unittest.mock import Mock, patch
 import os
 import sys
 
