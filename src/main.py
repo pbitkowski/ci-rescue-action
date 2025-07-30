@@ -282,7 +282,7 @@ class CIRescue:
         print(f"🔍 Parsing AI response for annotations (length: {len(analysis_text)} chars)...")
         
         if marker in analysis_text:
-            print(f"📍 Found annotation marker in AI response")
+            print("📍 Found annotation marker in AI response")
             parts = analysis_text.split(marker)
             comment = parts[0]
             
@@ -299,7 +299,7 @@ class CIRescue:
                     for i, annotation in enumerate(annotations):
                         print(f"   📌 Annotation {i+1}: {annotation.get('path', 'unknown')}:{annotation.get('start_line', 'unknown')} - {annotation.get('message', 'no message')[:50]}...")
                 else:
-                    print(f"⚠️  No annotations found in parsed JSON")
+                    print("⚠️  No annotations found in parsed JSON")
                     
                 return comment.strip(), annotations
                 
@@ -309,7 +309,7 @@ class CIRescue:
                 # If parsing fails, return the whole text as comment
                 return analysis_text.replace(marker, ""), None
         else:
-            print(f"ℹ️  No annotation markers found in AI response")
+            print("ℹ️  No annotation markers found in AI response")
             
         return analysis_text, None
 

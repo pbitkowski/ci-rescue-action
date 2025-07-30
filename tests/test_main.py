@@ -20,6 +20,9 @@ class TestOpenRouterClient(unittest.TestCase):
     def setUp(self):
         self.client = OpenRouterClient("test-api-key", "test-model")
 
+    def test_fail(self):
+	self.assertEqual(1,2)
+
     def test_init(self):
         """Test client initialization"""
         self.assertEqual(self.client.api_key, "test-api-key")
