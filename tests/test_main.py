@@ -4,7 +4,7 @@ Tests for CI Rescue action
 """
 
 import unittest
-from unittest.mock import Mock, patch, MagicMock
+from unittest.mock import Mock, patch
 import os
 import sys
 
@@ -87,9 +87,24 @@ class TestCIRescue(unittest.TestCase):
             'GITHUB_EVENT_NAME': 'pull_request'
         }
         
+        # Use a fresh mock for each test
+        self.patch_github = patch('main.Github')
+        self.patch_openrouter = patch('main.OpenRouterClient')
+        
+        self.mock_github_class = self.patch_github.start()
+        self.mock_openrouter_class = self.patch_openrouter.start()
+        
+        self.mock_github_instance = self.mock_github_class.return_value
+        self.mock_openrouter_instance = self.mock_openrouter_class.return_value
+
         with patch.dict(os.environ, self.env_vars):
-            with patch('main.Github'), patch('main.OpenRouterClient'):
-                self.rescue = CIRescue()
+            self.rescue = CIRescue()
+            self.rescue.github = self.mock_github_instance
+            self.rescue.openrouter = self.mock_openrouter_instance
+
+    def tearDown(self):
+        self.patch_github.stop()
+        self.patch_openrouter.stop()
     
     def test_init_missing_vars(self):
         """Test initialization with missing environment variables"""
@@ -97,16 +112,98 @@ class TestCIRescue(unittest.TestCase):
             with self.assertRaises(ValueError):
                 CIRescue()
     
-    @patch('main.Github')
-    @patch('main.OpenRouterClient')
-    def test_init_success(self, mock_openrouter, mock_github):
+    def test_init_success(self):
         """Test successful initialization"""
         with patch.dict(os.environ, self.env_vars):
-            rescue = CIRescue()
-            self.assertEqual(rescue.github_token, 'test-token')
-            self.assertEqual(rescue.openrouter_api_key, 'test-openrouter-key')
-            self.assertEqual(rescue.model, 'test-model')
-            self.assertEqual(rescue.max_tokens, 500)
+            self.assertIsInstance(self.rescue, CIRescue)
+            self.assertEqual(self.rescue.github_token, 'test-token')
+            self.assertEqual(self.rescue.openrouter_api_key, 'test-openrouter-key')
+            self.assertEqual(self.rescue.model, 'test-model')
+            self.assertEqual(self.rescue.max_tokens, 500)
+
+    def test_parse_analysis_with_valid_annotations(self):
+        """Test parsing analysis with a valid annotation block"""
+        valid_annotation_json = '''{
+          "annotations": [
+            {"path": "src/main.py", "start_line": 10, "message": "Test annotation"}
+          ]
+        }'''
+        analysis_text = f"This is the analysis.<<<CI-RESCUE-ANNOTATIONS>>>{valid_annotation_json}<<<CI-RESCUE-ANNOTATIONS>>>"
+        
+        comment, annotations = self.rescue._parse_analysis_with_annotations(analysis_text)
+        
+        self.assertEqual(comment, "This is the analysis.")
+        self.assertIsNotNone(annotations)
+        self.assertEqual(len(annotations), 1)
+        self.assertEqual(annotations[0]['path'], 'src/main.py')
+
+    def test_parse_analysis_no_annotations(self):
+        """Test parsing analysis with no annotation block"""
+        analysis_text = "This is a simple analysis with no annotations."
+        comment, annotations = self.rescue._parse_analysis_with_annotations(analysis_text)
+        self.assertEqual(comment, analysis_text)
+        self.assertIsNone(annotations)
+
+    def test_parse_analysis_malformed_json(self):
+        """Test parsing analysis with malformed JSON in the annotation block"""
+        malformed_json = '{"annotations": [{"path": "file.py"}]' # Missing closing brace
+        analysis_text = f"Analysis.<<<CI-RESCUE-ANNOTATIONS>>>{malformed_json}<<<CI-RESCUE-ANNOTATIONS>>>"
+        
+        comment, annotations = self.rescue._parse_analysis_with_annotations(analysis_text)
+        self.assertIn("Analysis.", comment)
+        self.assertIn(malformed_json, comment) # Should return the original text
+        self.assertIsNone(annotations)
+
+    @patch('main.CIRescue.post_annotations')
+    @patch('main.CIRescue.post_or_update_comment')
+    def test_run_with_annotations(self, mock_post_comment, mock_post_annotations):
+        """Test the main run loop correctly calls annotation methods"""
+        # Mock failure data and PR
+        self.rescue.get_workflow_run_failures = Mock(return_value=[FailureInfo('job', 'step', 'err', 'log', 'fail')])
+        mock_pr = Mock()
+        mock_pr.number = 123
+        self.rescue.get_pull_request = Mock(return_value=mock_pr)
+        
+        # Mock AI response with annotations
+        annotation_json = '''{
+          "annotations": [{"path": "test.py", "start_line": 1, "message": "failure"}]
+        }'''
+        ai_response = f"Analysis here.<<<CI-RESCUE-ANNOTATIONS>>>{annotation_json}<<<CI-RESCUE-ANNOTATIONS>>>"
+        self.mock_openrouter_instance.analyze_failure.return_value = ai_response
+
+        self.rescue.run()
+
+        # Verify that comment and annotation methods were called
+        mock_post_comment.assert_called_once()
+        mock_post_annotations.assert_called_once()
+        # Check that the parsed annotations are passed correctly
+        annotations_arg = mock_post_annotations.call_args[0][1]
+        self.assertEqual(len(annotations_arg), 1)
+        self.assertEqual(annotations_arg[0]['path'], 'test.py')
+
+    def test_post_annotations_api_call(self):
+        """Test that the GitHub check run API is called correctly"""
+        mock_repo = Mock()
+        self.mock_github_instance.get_repo.return_value = mock_repo
+        
+        mock_pr = Mock()
+        mock_pr.head.sha = 'test-sha'
+        mock_pr.number = 123
+
+        annotations = [
+            {"path": "file.py", "start_line": 1, "end_line": 1, "message": "Error", "annotation_level": "failure"}
+        ]
+
+        self.rescue.post_annotations(mock_pr, annotations)
+
+        # Verify that create_check_run was called with the right data
+        mock_repo.create_check_run.assert_called_once()
+        call_kwargs = mock_repo.create_check_run.call_args[1]
+        self.assertEqual(call_kwargs['name'], 'AI Failure Analysis')
+        self.assertEqual(call_kwargs['head_sha'], 'test-sha')
+        self.assertEqual(call_kwargs['conclusion'], 'failure')
+        self.assertEqual(len(call_kwargs['output']['annotations']), 1)
+        self.assertEqual(call_kwargs['output']['annotations'][0]['path'], 'file.py')
 
 
 class TestFailureInfo(unittest.TestCase):

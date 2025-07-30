@@ -64,7 +64,23 @@ Be specific about:
 - Exact error messages and their meaning
 - Command-line fixes when possible
 
-Format as a helpful GitHub comment in markdown. Start with "🚨 **CI Failure Analysis**"."""
+Format as a helpful GitHub comment in markdown. Start with \"🚨 **CI Failure Analysis**\".
+
+Finally, if the failure is related to specific file(s) (e.g. test failures, linting errors), provide annotations in a JSON block at the very end of your response, formatted like this. Do not include anything else in this block.
+<<<CI-RESCUE-ANNOTATIONS>>>
+{{
+  "annotations": [
+    {{
+      "path": "path/to/offending_file.py",
+      "start_line": 42,
+      "end_line": 42,
+      "annotation_level": "failure",
+      "message": "A brief explanation of why this line is causing a failure."
+    }}
+  ]
+}}
+<<<CI-RESCUE-ANNOTATIONS>>>
+"""
 
         headers = {
             "Authorization": f"Bearer {self.api_key}",
@@ -259,6 +275,45 @@ class CIRescue:
             
         except Exception as e:
             print(f"Error posting comment: {e}")
+
+    def _parse_analysis_with_annotations(self, analysis_text: str) -> (str, Optional[List[dict]]):
+        """Parse the AI response to separate the comment from annotations."""
+        marker = "<<<CI-RESCUE-ANNOTATIONS>>>"
+        if marker in analysis_text:
+            parts = analysis_text.split(marker)
+            comment = parts[0]
+            try:
+                # The JSON content is between the markers
+                annotations_json_str = parts[1]
+                annotations_data = json.loads(annotations_json_str)
+                return comment.strip(), annotations_data.get("annotations")
+            except (json.JSONDecodeError, IndexError, AttributeError):
+                # If parsing fails, return the whole text as comment
+                return analysis_text.replace(marker, ""), None
+        return analysis_text, None
+
+    def post_annotations(self, pr: PullRequest, annotations: List[dict]) -> None:
+        """Create a check run with annotations."""
+        if not annotations:
+            print("ℹ️ No annotations to post.")
+            return
+
+        try:
+            repo = self.github.get_repo(self.repository)
+            repo.create_check_run(
+                name="AI Failure Analysis",
+                head_sha=pr.head.sha,
+                status="completed",
+                conclusion="failure",
+                output={
+                    "title": "CI Rescue - Annotated Failures",
+                    "summary": f"Found {len(annotations)} issue(s) that may be related to the failure.",
+                    "annotations": annotations,
+                },
+            )
+            print(f"✅ Created check run with {len(annotations)} annotations on PR #{pr.number}.")
+        except Exception as e:
+            print(f"❌ Error creating check run with annotations: {e}")
     
     def run(self) -> None:
         """Main execution method"""
@@ -285,9 +340,11 @@ class CIRescue:
         primary_failure = failures[0]
         print(f"🤖 Analyzing failure in job '{primary_failure.job_name}'...")
         
-        analysis = self.openrouter.analyze_failure(
+        analysis_text = self.openrouter.analyze_failure(
             primary_failure, self.max_tokens
         )
+        
+        comment, annotations = self._parse_analysis_with_annotations(analysis_text)
 
         # Add summary if multiple failures
         if len(failures) > 1:
@@ -295,10 +352,15 @@ class CIRescue:
                 f"- **{f.job_name}** → {f.step_name} ({f.conclusion})"
                 for f in failures[1:]
             ])
-            analysis += f"\n\n**Additional Failures:**\n{other_failures}"
+            comment += f"\n\n**Additional Failures:**\n{other_failures}"
 
         # Post comment to PR
-        self.post_or_update_comment(pr, analysis)
+        self.post_or_update_comment(pr, comment)
+
+        # Post annotations
+        if annotations:
+            self.post_annotations(pr, annotations)
+
         print("✅ Analysis complete!")
 
 
