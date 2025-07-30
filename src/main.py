@@ -60,7 +60,7 @@ Please provide:
 3. **Code Fix**: If applicable, suggest specific code changes or commands
 
 Be specific about:
-- File names and line numbers if mentioned in logs
+- File names and line numbers if mentioned in logs. **Pay close attention to error formats like `E  File \"/path/to/file.py\", line 24` to extract the exact line number.**
 - Exact error messages and their meaning
 - Command-line fixes when possible
 
