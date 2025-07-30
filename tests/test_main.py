@@ -20,9 +20,6 @@ class TestOpenRouterClient(unittest.TestCase):
     def setUp(self):
         self.client = OpenRouterClient("test-api-key", "test-model")
 
-    def test_fail(self):
-	self.assertEqual(1,2)
-    
     def test_init(self):
         """Test client initialization"""
         self.assertEqual(self.client.api_key, "test-api-key")
@@ -154,9 +151,9 @@ class TestCIRescue(unittest.TestCase):
         self.assertIn(malformed_json, comment) # Should return the original text
         self.assertIsNone(annotations)
 
-    @patch('main.CIRescue.post_annotations')
+    @patch('main.CIRescue.post_line_annotations')
     @patch('main.CIRescue.post_or_update_comment')
-    def test_run_with_annotations(self, mock_post_comment, mock_post_annotations):
+    def test_run_with_annotations(self, mock_post_comment, mock_post_line_annotations):
         """Test the main run loop correctly calls annotation methods"""
         # Mock failure data and PR
         self.rescue.get_workflow_run_failures = Mock(return_value=[FailureInfo('job', 'step', 'err', 'log', 'fail')])
@@ -173,37 +170,58 @@ class TestCIRescue(unittest.TestCase):
 
         self.rescue.run()
 
-        # Verify that comment and annotation methods were called
+        # Verify that comment and line annotation methods were called
         mock_post_comment.assert_called_once()
-        mock_post_annotations.assert_called_once()
-        # Check that the parsed annotations are passed correctly
-        annotations_arg = mock_post_annotations.call_args[0][1]
+        mock_post_line_annotations.assert_called_once()
+        
+        # Check that the comment includes formatted annotations
+        comment_arg = mock_post_comment.call_args[0][1]
+        self.assertIn("Code Annotations", comment_arg)
+        self.assertIn("test.py", comment_arg)
+        
+        # Check that the parsed annotations are passed to line annotations
+        annotations_arg = mock_post_line_annotations.call_args[0][1]
         self.assertEqual(len(annotations_arg), 1)
         self.assertEqual(annotations_arg[0]['path'], 'test.py')
 
-    def test_post_annotations_api_call(self):
-        """Test that the GitHub check run API is called correctly"""
-        mock_repo = Mock()
-        self.mock_github_instance.get_repo.return_value = mock_repo
-        
+    def test_post_line_annotations_api_call(self):
+        """Test that the GitHub review API is called correctly for line annotations"""
         mock_pr = Mock()
         mock_pr.head.sha = 'test-sha'
         mock_pr.number = 123
+        mock_commits = Mock()
+        mock_commits.reversed = [Mock()]  # Mock commit list
+        mock_pr.get_commits.return_value = mock_commits
+        mock_pr.create_review.return_value = Mock(id=456)
 
         annotations = [
-            {"path": "file.py", "start_line": 1, "end_line": 1, "message": "Error", "annotation_level": "failure"}
+            {"path": "file.py", "start_line": 1, "message": "Error", "annotation_level": "failure"}
         ]
 
-        self.rescue.post_annotations(mock_pr, annotations)
+        self.rescue.post_line_annotations(mock_pr, annotations)
 
-        # Verify that create_check_run was called with the right data
-        mock_repo.create_check_run.assert_called_once()
-        call_kwargs = mock_repo.create_check_run.call_args[1]
-        self.assertEqual(call_kwargs['name'], 'AI Failure Analysis')
-        self.assertEqual(call_kwargs['head_sha'], 'test-sha')
-        self.assertEqual(call_kwargs['conclusion'], 'failure')
-        self.assertEqual(len(call_kwargs['output']['annotations']), 1)
-        self.assertEqual(call_kwargs['output']['annotations'][0]['path'], 'file.py')
+        # Verify that create_review was called with the right data
+        mock_pr.create_review.assert_called_once()
+        call_kwargs = mock_pr.create_review.call_args[1]
+        self.assertEqual(call_kwargs['event'], 'COMMENT')
+        self.assertEqual(len(call_kwargs['comments']), 1)
+        self.assertEqual(call_kwargs['comments'][0]['path'], 'file.py')
+        self.assertEqual(call_kwargs['comments'][0]['line'], 1)
+        self.assertIn('CI Rescue Analysis', call_kwargs['comments'][0]['body'])
+        
+    def test_format_annotations_for_comment(self):
+        """Test formatting annotations for inclusion in PR comment"""
+        annotations = [
+            {"path": "test.py", "start_line": 10, "message": "Test error", "annotation_level": "failure"}
+        ]
+        
+        formatted = self.rescue.format_annotations_for_comment(annotations)
+        
+        self.assertIn("Code Annotations", formatted)
+        self.assertIn("test.py", formatted)
+        self.assertIn("Line 10", formatted)
+        self.assertIn("Test error", formatted)
+        self.assertIn("❌", formatted)  # failure emoji
 
 
 class TestFailureInfo(unittest.TestCase):

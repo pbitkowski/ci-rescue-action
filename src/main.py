@@ -279,41 +279,150 @@ class CIRescue:
     def _parse_analysis_with_annotations(self, analysis_text: str) -> (str, Optional[List[dict]]):
         """Parse the AI response to separate the comment from annotations."""
         marker = "<<<CI-RESCUE-ANNOTATIONS>>>"
+        print(f"🔍 Parsing AI response for annotations (length: {len(analysis_text)} chars)...")
+        
         if marker in analysis_text:
+            print(f"📍 Found annotation marker in AI response")
             parts = analysis_text.split(marker)
             comment = parts[0]
+            
             try:
                 # The JSON content is between the markers
                 annotations_json_str = parts[1]
+                print(f"📋 Raw annotation JSON: {annotations_json_str[:200]}..." if len(annotations_json_str) > 200 else f"📋 Raw annotation JSON: {annotations_json_str}")
+                
                 annotations_data = json.loads(annotations_json_str)
-                return comment.strip(), annotations_data.get("annotations")
-            except (json.JSONDecodeError, IndexError, AttributeError):
+                annotations = annotations_data.get("annotations")
+                
+                if annotations:
+                    print(f"✅ Successfully parsed {len(annotations)} annotation(s)")
+                    for i, annotation in enumerate(annotations):
+                        print(f"   📌 Annotation {i+1}: {annotation.get('path', 'unknown')}:{annotation.get('start_line', 'unknown')} - {annotation.get('message', 'no message')[:50]}...")
+                else:
+                    print(f"⚠️  No annotations found in parsed JSON")
+                    
+                return comment.strip(), annotations
+                
+            except (json.JSONDecodeError, IndexError, AttributeError) as e:
+                print(f"❌ Failed to parse annotation JSON: {e}")
+                print(f"   Raw content: {parts[1][:100] if len(parts) > 1 else 'no content'}...")
                 # If parsing fails, return the whole text as comment
                 return analysis_text.replace(marker, ""), None
+        else:
+            print(f"ℹ️  No annotation markers found in AI response")
+            
         return analysis_text, None
 
-    def post_annotations(self, pr: PullRequest, annotations: List[dict]) -> None:
-        """Create a check run with annotations."""
+    def format_annotations_for_comment(self, annotations: List[dict]) -> str:
+        """Format annotations as markdown for inclusion in PR comment."""
         if not annotations:
-            print("ℹ️ No annotations to post.")
-            return
+            return ""
+        
+        print(f"📝 Formatting {len(annotations)} annotations for PR comment")
+        
+        formatted = "\n\n## 📍 **Code Annotations**\n\n"
+        
+        for i, annotation in enumerate(annotations, 1):
+            path = annotation.get('path', 'unknown file')
+            start_line = annotation.get('start_line', annotation.get('line', 'unknown'))
+            end_line = annotation.get('end_line', start_line)
+            message = annotation.get('message', 'No message provided')
+            level = annotation.get('annotation_level', 'notice')
+            
+            # Choose emoji based on annotation level
+            level_emoji = {
+                'failure': '❌',
+                'error': '🚨', 
+                'warning': '⚠️',
+                'notice': 'ℹ️'
+            }.get(level, '📝')
+            
+            if start_line == end_line:
+                line_info = f"Line {start_line}"
+            else:
+                line_info = f"Lines {start_line}-{end_line}"
+            
+            formatted += f"{level_emoji} **{path}** ({line_info})\n"
+            formatted += f"   {message}\n\n"
+        
+        return formatted
 
+    def post_line_annotations(self, pr: PullRequest, annotations: List[dict]) -> None:
+        """Post annotations as review comments on specific lines of code."""
+        if not annotations:
+            print("ℹ️  No line annotations to post")
+            return
+        
+        print(f"📌 Posting {len(annotations)} line annotations to PR #{pr.number}")
+        
         try:
-            repo = self.github.get_repo(self.repository)
-            repo.create_check_run(
-                name="AI Failure Analysis",
-                head_sha=pr.head.sha,
-                status="completed",
-                conclusion="failure",
-                output={
-                    "title": "CI Rescue - Annotated Failures",
-                    "summary": f"Found {len(annotations)} issue(s) that may be related to the failure.",
-                    "annotations": annotations,
-                },
-            )
-            print(f"✅ Created check run with {len(annotations)} annotations on PR #{pr.number}.")
+            # Get the latest commit SHA from the PR
+            commit_sha = pr.head.sha
+            print(f"🔍 Using commit SHA: {commit_sha}")
+            
+            # Prepare review comments
+            review_comments = []
+            
+            for i, annotation in enumerate(annotations):
+                path = annotation.get('path')
+                line = annotation.get('start_line', annotation.get('line'))
+                message = annotation.get('message', 'No message provided')
+                level = annotation.get('annotation_level', 'notice')
+                
+                if not path or not line:
+                    print(f"⚠️  Skipping annotation {i+1}: missing path or line number")
+                    continue
+                
+                # Add emoji based on level
+                level_emoji = {
+                    'failure': '❌',
+                    'error': '🚨', 
+                    'warning': '⚠️',
+                    'notice': 'ℹ️'
+                }.get(level, '📝')
+                
+                formatted_message = f"{level_emoji} **CI Rescue Analysis**\n\n{message}"
+                
+                review_comments.append({
+                    'path': path,
+                    'line': int(line),
+                    'body': formatted_message
+                })
+                
+                print(f"   📍 Queued annotation for {path}:{line}")
+            
+            if not review_comments:
+                print("⚠️  No valid annotations to post (missing path/line info)")
+                return
+            
+            # Create a review with the comments
+            try:
+                review = pr.create_review(
+                    commit=pr.get_commits().reversed[0],  # Latest commit
+                    event='COMMENT',
+                    comments=review_comments
+                )
+                print(f"✅ Posted {len(review_comments)} line annotations as review #{review.id}")
+                
+            except Exception as e:
+                print(f"❌ Failed to create review with line comments: {e}")
+                print("🔄 Falling back to individual comments...")
+                
+                # Fallback: Post individual comments
+                for comment_data in review_comments:
+                    try:
+                        pr.create_review_comment(
+                            body=comment_data['body'],
+                            commit=pr.get_commits().reversed[0],
+                            path=comment_data['path'],
+                            line=comment_data['line']
+                        )
+                        print(f"   ✅ Posted comment on {comment_data['path']}:{comment_data['line']}")
+                    except Exception as comment_error:
+                        print(f"   ❌ Failed to post comment on {comment_data['path']}:{comment_data['line']}: {comment_error}")
+                        
         except Exception as e:
-            print(f"❌ Error creating check run with annotations: {e}")
+            print(f"❌ Error posting line annotations: {e}")
     
     def run(self) -> None:
         """Main execution method"""
@@ -346,6 +455,13 @@ class CIRescue:
         
         comment, annotations = self._parse_analysis_with_annotations(analysis_text)
 
+        # Add annotations to comment summary if available
+        if annotations:
+            print(f"📌 Adding {len(annotations)} annotations to PR comment summary")
+            comment += self.format_annotations_for_comment(annotations)
+        else:
+            print("ℹ️  No annotations to add to PR comment")
+
         # Add summary if multiple failures
         if len(failures) > 1:
             other_failures = "\n".join([
@@ -357,9 +473,9 @@ class CIRescue:
         # Post comment to PR
         self.post_or_update_comment(pr, comment)
 
-        # Post annotations
+        # Post line-by-line annotations
         if annotations:
-            self.post_annotations(pr, annotations)
+            self.post_line_annotations(pr, annotations)
 
         print("✅ Analysis complete!")
 
