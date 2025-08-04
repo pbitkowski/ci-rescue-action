@@ -42,6 +42,9 @@ class TestGitHubClient(unittest.TestCase):
         self.env_patcher.stop()
         self.github_patcher.stop()
 
+    def test_failing_scenario(self):
+        self.assertEqual(1, 2)
+
     def test_post_line_annotations_api_call(self):
         """Test that the GitHub review API is called correctly for line annotations"""
         mock_pr = Mock()

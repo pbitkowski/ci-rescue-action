@@ -314,6 +314,10 @@ class TestCIRescue(unittest.TestCase):
         self.patch_github.stop()
         self.patch_openrouter.stop()
 
+
+    def test_failure_scenario(self):
+        self.assertEqual(1, 2)
+
     def test_init_missing_vars(self):
         """Test initialization with missing environment variables"""
         with patch.dict(os.environ, {}, clear=True):
