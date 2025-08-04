@@ -68,7 +68,15 @@ class CIRescue:
 
         self.github.post_or_update_comment(pr, comment)
         if annotations:
-            self.github.post_line_annotations(pr, annotations)
+            # Convert annotations to GitHub review comment format
+            review_comments = []
+            for annotation in annotations:
+                review_comments.append({
+                    'path': annotation.get('path', ''),
+                    'line': int(annotation.get('start_line', annotation.get('line', 1))),
+                    'body': f"**CI Rescue Analysis**: {annotation.get('message', 'No message provided')}"
+                })
+            self.github.post_line_annotations(pr, review_comments)
 
         print("✅ Analysis complete!")
 

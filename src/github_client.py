@@ -127,23 +127,26 @@ class GitHubClient:
         except Exception as e:
             print(f"Error posting comment: {e}")
 
-    def post_line_annotations(self, pr: PullRequest, annotation_comments: List[dict]):
+    def post_line_annotations(self, pr: PullRequest, review_comments: List[dict]):
         """Post line annotations on the pull request"""
+        if not review_comments:
+            return
+        
         # Create a review with the comments
         try:
             review = pr.create_review(
                 commit=pr.get_commits().reversed[0],  # Latest commit
                 event='COMMENT',
-                comments=annotation_comments
+                comments=review_comments
             )
-            print(f"✅ Posted {len(annotation_comments)} line annotations as review #{review.id}")
+            print(f"✅ Posted {len(review_comments)} line annotations as review #{review.id}")
             
         except Exception as e:
             print(f"❌ Failed to create review with line comments: {e}")
             print("🔄 Falling back to individual comments...")
             
             # Fallback: Post individual comments
-            for comment_data in annotation_comments:
+            for comment_data in review_comments:
                 try:
                     pr.create_review_comment(
                         body=comment_data['body'],
@@ -153,6 +156,4 @@ class GitHubClient:
                     )
                     print(f"   ✅ Posted comment on {comment_data['path']}:{comment_data['line']}")
                 except Exception as comment_error:
-                    print(f"   ❌ Failed to post comment on {comment_data['path']}:{comment_data['line']}: {comment_error}")         
-        except Exception as e:
-            print(f"❌ Error posting line annotations: {e}")
+                    print(f"   ❌ Failed to post comment on {comment_data['path']}:{comment_data['line']}: {comment_error}")
