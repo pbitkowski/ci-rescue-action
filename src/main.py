@@ -10,6 +10,7 @@ from typing import List, Optional
 from github_client import GitHubClient
 from openrouter_client import OpenRouterClient
 from models import FailureInfo
+from constants import CI_ANNOTATION_MARKER
 
 
 class CIRescue:
@@ -138,7 +139,7 @@ class CIRescue:
             review_comment = {
                 'path': path,
                 'line': line,
-                'body': f"{level_emoji} **CI Rescue Analysis**\n\n{message}"
+                'body': f"{level_emoji} **{CI_ANNOTATION_MARKER}**\n\n{message}"
             }
             
             review_comments.append(review_comment)

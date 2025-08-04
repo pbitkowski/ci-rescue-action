@@ -5,6 +5,7 @@ OpenRouter Client for analyzing CI failures
 
 import requests
 from models import FailureInfo
+from constants import CI_FAILURE_ANALYSIS_MAIN_TITLE
 
 class OpenRouterClient:
     """Client for interacting with OpenRouter API"""
@@ -53,7 +54,7 @@ Be specific about:
 - Exact error messages and their meaning
 - Command-line fixes when possible
 
-Format as a helpful GitHub comment in markdown. Start with "🚨 **CI Failure Analysis**".
+Format as a helpful GitHub comment in markdown. Start with "{CI_FAILURE_ANALYSIS_MAIN_TITLE}".
 
 If the failure is related to specific files, provide annotations in a JSON block:
 <<<CI-RESCUE-ANNOTATIONS>>>
@@ -102,7 +103,7 @@ If the failure is related to specific files, provide annotations in a JSON block
             result = response.json()
             return result["choices"][0]["message"]["content"]
         except Exception as e:
-            return f"🚨 **CI Failure Analysis**\n\n❌ Failed to analyze the error with AI: {str(e)}\n\n**Manual Review Needed:**\nPlease check the logs for more details."
+            return f"{CI_FAILURE_ANALYSIS_MAIN_TITLE}\n\n❌ Failed to analyze the error with AI: {str(e)}\n\n**Manual Review Needed:**\nPlease check the logs for more details."
 
     def _extract_error_context(self, logs: str) -> str:
         """Extract key error information from logs with surrounding context"""

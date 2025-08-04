@@ -5,7 +5,6 @@ Tests for GitHub client functionality
 
 import unittest
 from unittest.mock import Mock, patch
-from typing import List
 import os
 import sys
 
@@ -64,8 +63,14 @@ class TestGitHubClient(unittest.TestCase):
             }
         ]
 
+        # Mock get_review_comments for cleanup
+        mock_pr.get_review_comments.return_value = []
+        
         self.client.post_line_annotations(mock_pr, review_comments)
 
+        # Verify that cleanup was called
+        mock_pr.get_review_comments.assert_called_once()
+        
         # Verify that create_review was called with the right data
         mock_pr.create_review.assert_called_once()
         call_kwargs = mock_pr.create_review.call_args[1]
@@ -73,7 +78,9 @@ class TestGitHubClient(unittest.TestCase):
         self.assertEqual(len(call_kwargs["comments"]), 1)
         self.assertEqual(call_kwargs["comments"][0]["path"], "file.py")
         self.assertEqual(call_kwargs["comments"][0]["line"], 1)
-        self.assertIn("CI Rescue Analysis", call_kwargs["comments"][0]["body"])
+        # Import the constant for testing
+        from constants import CI_ANNOTATION_MARKER
+        self.assertIn(CI_ANNOTATION_MARKER, call_kwargs["comments"][0]["body"])
 
     @patch("requests.get")
     def test_get_workflow_run_failures(self, mock_get):
@@ -126,8 +133,39 @@ class TestGitHubClient(unittest.TestCase):
         self.client.post_or_update_comment(mock_pr, "Test comment")
         
         # Should create new comment when none exist
-        expected_body = "<!-- CI-RESCUE-COMMENT -->\nTest comment"
+        from constants import CI_RESCUE_COMMENT_MARKER
+        expected_body = f"{CI_RESCUE_COMMENT_MARKER}\nTest comment"
         mock_pr.create_issue_comment.assert_called_once_with(expected_body)
+
+    def test_remove_previous_ci_rescue_annotations(self):
+        """Test removing previous CI Rescue annotation comments"""
+        mock_pr = Mock()
+        
+        # Mock previous CI Rescue comments
+        from constants import CI_ANNOTATION_MARKER
+        
+        mock_comment1 = Mock()
+        mock_comment1.body = f"❌ **{CI_ANNOTATION_MARKER}**\n\nPrevious error"
+        mock_comment1.path = "file1.py"
+        mock_comment1.line = 10
+        
+        mock_comment2 = Mock()
+        mock_comment2.body = "Some other comment"  # Not a CI Rescue comment
+        
+        mock_comment3 = Mock()
+        mock_comment3.body = f"🚨 **{CI_ANNOTATION_MARKER}**\n\nAnother previous error"
+        mock_comment3.path = "file2.py"
+        mock_comment3.line = 20
+        
+        mock_pr.get_review_comments.return_value = [mock_comment1, mock_comment2, mock_comment3]
+        
+        # Call the cleanup method
+        self.client.remove_previous_ci_rescue_annotations(mock_pr)
+        
+        # Verify only CI Rescue comments were deleted
+        mock_comment1.delete.assert_called_once()
+        mock_comment3.delete.assert_called_once()
+        mock_comment2.delete.assert_not_called()  # Should not delete non-CI-Rescue comments
 
 
 if __name__ == "__main__":

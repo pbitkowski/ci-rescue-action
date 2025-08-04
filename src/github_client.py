@@ -11,6 +11,7 @@ from github import Github
 from github.PullRequest import PullRequest
 import requests
 from models import FailureInfo
+from constants import CI_ANNOTATION_MARKER, CI_RESCUE_COMMENT_MARKER
 
 
 class GitHubClient:
@@ -108,15 +109,14 @@ class GitHubClient:
 
     def post_or_update_comment(self, pr: PullRequest, analysis: str) -> None:
         """Post or update a comment on the pull request"""
-        comment_marker = "<!-- CI-RESCUE-COMMENT -->"
-        comment_body = f"{comment_marker}\n{analysis}"
+        comment_body = f"{CI_RESCUE_COMMENT_MARKER}\n{analysis}"
         
         try:
             if self.comment_mode == "update-existing":
                 # Look for existing comment
                 comments = pr.get_issue_comments()
                 for comment in comments:
-                    if comment_marker in comment.body:
+                    if CI_RESCUE_COMMENT_MARKER in comment.body:
                         comment.edit(comment_body)
                         print(f"Updated existing comment on PR #{pr.number}")
                         return
@@ -128,10 +128,45 @@ class GitHubClient:
         except Exception as e:
             print(f"Error posting comment: {e}")
 
+    def remove_previous_ci_rescue_annotations(self, pr):
+        """Remove previous CI Rescue annotation comments to avoid duplicates"""
+        try:
+            print("🧹 Cleaning up previous CI Rescue annotations...")
+            
+            # Get all review comments on the PR
+            review_comments = pr.get_review_comments()
+            ci_rescue_comments = []
+            
+            for comment in review_comments:
+                # Check if this is a CI Rescue annotation comment
+                if comment.body and CI_ANNOTATION_MARKER in comment.body:
+                    ci_rescue_comments.append(comment)
+            
+            if ci_rescue_comments:
+                print(f"🗑️  Found {len(ci_rescue_comments)} previous CI Rescue annotations to remove")
+                
+                # Delete each CI Rescue annotation comment
+                for comment in ci_rescue_comments:
+                    try:
+                        comment.delete()
+                        print(f"   ✅ Deleted annotation on {comment.path}:{comment.line if hasattr(comment, 'line') else 'unknown'}")
+                    except Exception as e:
+                        print(f"   ⚠️  Failed to delete annotation: {e}")
+                        
+                print(f"✅ Cleaned up {len(ci_rescue_comments)} previous annotations")
+            else:
+                print("ℹ️  No previous CI Rescue annotations found")
+                
+        except Exception as e:
+            print(f"⚠️  Error cleaning up previous annotations: {e}")
+
     def post_line_annotations(self, pr, review_comments):
         """Post line annotations on the pull request"""
         if not review_comments:
             return
+            
+        # Clean up previous CI Rescue annotations first
+        self.remove_previous_ci_rescue_annotations(pr)
         
         # Validate comment structure
         for i, comment in enumerate(review_comments):

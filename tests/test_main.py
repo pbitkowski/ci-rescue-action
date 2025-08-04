@@ -273,7 +273,9 @@ Line 4: Finished"""
         )
         
         result = self.client.analyze_failure(failure_info)
-        self.assertIn("🚨 **CI Failure Analysis**", result)
+        # Import the constant for testing
+        from constants import CI_FAILURE_ANALYSIS_MAIN_TITLE
+        self.assertIn(CI_FAILURE_ANALYSIS_MAIN_TITLE, result)
         self.assertIn("Failed to analyze the error with AI", result)
 
 
@@ -408,7 +410,9 @@ class TestCIRescue(unittest.TestCase):
         self.assertEqual(review_comments_arg[0]["path"], "test.py")
         self.assertEqual(review_comments_arg[0]["line"], 1)
         self.assertIn("body", review_comments_arg[0])
-        self.assertIn("CI Rescue Analysis", review_comments_arg[0]["body"])
+        # Import the constant for testing
+        from constants import CI_ANNOTATION_MARKER
+        self.assertIn(CI_ANNOTATION_MARKER, review_comments_arg[0]["body"])
         
     def test_format_annotations_for_comment(self):
         """Test formatting annotations for inclusion in PR comment"""
