@@ -3,6 +3,7 @@
 GitHub client utilities
 """
 
+import json
 import os
 
 from typing import List, Optional
@@ -16,8 +17,10 @@ class GitHubClient:
         self.github_token = github_token
         self.repository = repository
         self.run_id = run_id
-        self.comment_mode = os.getenv("INPUT_COMMENT_MODE", "update-existing")
         self.github = Github(self.github_token)
+        self.event_name = os.getenv("GITHUB_EVENT_NAME")
+        self.sha = os.getenv("GITHUB_SHA")
+        self.comment_mode = os.getenv("INPUT_COMMENT_MODE", "update-existing")
 
     def get_workflow_run_failures(self) -> List[FailureInfo]:
         """Get failure information from the current workflow run"""
@@ -79,14 +82,25 @@ class GitHubClient:
         """Get the pull request associated with this run"""
         try:
             repo = self.github.get_repo(self.repository)
-
+            
+            # For pull_request events, get PR from event
+            if self.event_name == "pull_request":
+                event_path = os.getenv("GITHUB_EVENT_PATH")
+                if event_path and os.path.exists(event_path):
+                    with open(event_path, 'r') as f:
+                        event_data = json.load(f)
+                    pr_number = event_data.get("pull_request", {}).get("number")
+                    if pr_number:
+                        return repo.get_pull(pr_number)
+            
+            # For other events, search for PRs with this commit
             prs = repo.get_pulls(state="open")
             for pr in prs:
-                if pr.head.sha == os.getenv("GITHUB_SHA"):
+                if pr.head.sha == self.sha:
                     return pr
-
+                    
             return None
-
+            
         except Exception as e:
             print(f"Error getting pull request: {e}")
             return None
