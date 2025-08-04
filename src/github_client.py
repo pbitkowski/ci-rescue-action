@@ -12,6 +12,7 @@ from github.PullRequest import PullRequest
 import requests
 from models import FailureInfo
 
+
 class GitHubClient:
     def __init__(self, github_token: str, repository: str, run_id: str):
         self.github_token = github_token
@@ -127,10 +128,19 @@ class GitHubClient:
         except Exception as e:
             print(f"Error posting comment: {e}")
 
-    def post_line_annotations(self, pr: PullRequest, review_comments: List[dict]):
+    def post_line_annotations(self, pr, review_comments):
         """Post line annotations on the pull request"""
         if not review_comments:
             return
+        
+        # Validate comment structure
+        for i, comment in enumerate(review_comments):
+            if not isinstance(comment, dict):
+                raise ValueError(f"Review comment {i} must be a dict")
+            if 'path' not in comment or 'line' not in comment or 'body' not in comment:
+                raise ValueError(f"Review comment {i} missing required fields: path, line, body")
+            if not isinstance(comment['line'], int):
+                raise ValueError(f"Review comment {i} 'line' must be an integer")
         
         # Create a review with the comments
         try:

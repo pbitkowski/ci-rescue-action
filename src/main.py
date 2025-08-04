@@ -68,14 +68,7 @@ class CIRescue:
 
         self.github.post_or_update_comment(pr, comment)
         if annotations:
-            # Convert annotations to GitHub review comment format
-            review_comments = []
-            for annotation in annotations:
-                review_comments.append({
-                    'path': annotation.get('path', ''),
-                    'line': int(annotation.get('start_line', annotation.get('line', 1))),
-                    'body': f"**CI Rescue Analysis**: {annotation.get('message', 'No message provided')}"
-                })
+            review_comments = self.convert_annotations_to_review_comments(annotations)
             self.github.post_line_annotations(pr, review_comments)
 
         print("✅ Analysis complete!")
@@ -115,6 +108,44 @@ class CIRescue:
 
         return analysis_text, None
 
+    def convert_annotations_to_review_comments(self, annotations):
+        """Convert AI annotations to GitHub ReviewComment format"""
+        review_comments = []
+        
+        for annotation in annotations:
+            path = annotation.get('path', '')
+            if not path:
+                print(f"⚠️  Skipping annotation without path: {annotation}")
+                continue
+                
+            try:
+                line = int(annotation.get('start_line', annotation.get('line', 1)))
+            except (ValueError, TypeError):
+                print(f"⚠️  Invalid line number in annotation: {annotation}")
+                continue
+                
+            message = annotation.get('message', 'No message provided')
+            level = annotation.get('annotation_level', 'notice')
+            
+            # Create emoji based on level  
+            level_emoji = {
+                'failure': '❌',
+                'error': '🚨', 
+                'warning': '⚠️',
+                'notice': 'ℹ️'
+            }.get(level, '📝')
+            
+            review_comment = {
+                'path': path,
+                'line': line,
+                'body': f"{level_emoji} **CI Rescue Analysis**\n\n{message}"
+            }
+            
+            review_comments.append(review_comment)
+            
+        print(f"🔍 Converted {len(annotations)} annotations to {len(review_comments)} review comments")
+        return review_comments
+
     def format_annotations_for_comment(self, annotations: List[dict]) -> str:
         """Format annotations as markdown for inclusion in PR comment."""
         if not annotations:
@@ -124,7 +155,7 @@ class CIRescue:
 
         formatted = "\n\n## 📍 **Code Annotations**\n\n"
 
-        for i, annotation in enumerate(annotations, 1):
+        for annotation in annotations:
             path = annotation.get('path', 'unknown file')
             start_line = annotation.get('start_line', annotation.get('line', 'unknown'))
             end_line = annotation.get('end_line', start_line)

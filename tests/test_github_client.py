@@ -5,6 +5,7 @@ Tests for GitHub client functionality
 
 import unittest
 from unittest.mock import Mock, patch
+from typing import List
 import os
 import sys
 
@@ -55,15 +56,15 @@ class TestGitHubClient(unittest.TestCase):
         mock_pr.get_commits.return_value = mock_commits
         mock_pr.create_review.return_value = Mock(id=456)
 
-        annotation_comments = [
+        review_comments = [
             {
                 "path": "file.py",
                 "line": 1,
-                "body": "CI Rescue Analysis: Error",
+                "body": "❌ **CI Rescue Analysis**\n\nError message",
             }
         ]
 
-        self.client.post_line_annotations(mock_pr, annotation_comments)
+        self.client.post_line_annotations(mock_pr, review_comments)
 
         # Verify that create_review was called with the right data
         mock_pr.create_review.assert_called_once()
@@ -101,11 +102,15 @@ class TestGitHubClient(unittest.TestCase):
 
     def test_get_pull_request(self):
         """Test getting pull request for workflow run"""
+        # Simple mock setup - just set sha and event_name
+        self.client.sha = "test-sha"
+        self.client.event_name = "push"  # Use non-PR event for simplicity
+        
         mock_repo = Mock()
         mock_pr = Mock()
-        mock_pr.head.sha = "test-sha"
+        mock_pr.head.sha = "test-sha"  # Match the client sha
         
-        # Mock the github client that's already created
+        # Mock the github client
         self.client.github.get_repo.return_value = mock_repo
         mock_repo.get_pulls.return_value = [mock_pr]
         
@@ -123,6 +128,7 @@ class TestGitHubClient(unittest.TestCase):
         # Should create new comment when none exist
         expected_body = "<!-- CI-RESCUE-COMMENT -->\nTest comment"
         mock_pr.create_issue_comment.assert_called_once_with(expected_body)
+
 
 if __name__ == "__main__":
     unittest.main()

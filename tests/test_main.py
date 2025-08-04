@@ -18,7 +18,7 @@ from openrouter_client import OpenRouterClient
 
 class TestOpenRouterClient(unittest.TestCase):
     """Test OpenRouter client functionality"""
-
+    
     def setUp(self):
         self.client = OpenRouterClient("test-api-key", "test-model")
 
@@ -236,7 +236,7 @@ Line 4: Finished"""
         self.assertEqual(self.client.api_key, "test-api-key")
         self.assertEqual(self.client.model, "test-model")
         self.assertEqual(self.client.base_url, "https://openrouter.ai/api/v1")
-
+    
     @patch("requests.post")
     def test_analyze_failure_success(self, mock_post):
         """Test successful failure analysis"""
@@ -246,32 +246,32 @@ Line 4: Finished"""
         }
         mock_response.raise_for_status.return_value = None
         mock_post.return_value = mock_response
-
+        
         failure_info = FailureInfo(
             job_name="test-job",
-            step_name="test-step",
+            step_name="test-step", 
             error_message="test error",
             logs="test logs",
             conclusion="failure",
         )
-
+        
         result = self.client.analyze_failure(failure_info)
         self.assertEqual(result, "Test analysis result")
         mock_post.assert_called_once()
-
+    
     @patch("requests.post")
     def test_analyze_failure_error(self, mock_post):
         """Test failure analysis with API error"""
         mock_post.side_effect = Exception("API Error")
-
+        
         failure_info = FailureInfo(
             job_name="test-job",
             step_name="test-step",
-            error_message="test error",
+            error_message="test error", 
             logs="test logs",
             conclusion="failure",
         )
-
+        
         result = self.client.analyze_failure(failure_info)
         self.assertIn("🚨 **CI Failure Analysis**", result)
         self.assertIn("Failed to analyze the error with AI", result)
@@ -279,7 +279,7 @@ Line 4: Finished"""
 
 class TestCIRescue(unittest.TestCase):
     """Test CI Rescue main functionality"""
-
+    
     def setUp(self):
         # Mock environment variables
         self.env_vars = {
@@ -294,14 +294,14 @@ class TestCIRescue(unittest.TestCase):
             "GITHUB_RUN_ID": "12345",
             "GITHUB_EVENT_NAME": "pull_request",
         }
-
+        
         # Use a fresh mock for each test
-        self.patch_github = patch("main.GitHubClient")
-        self.patch_openrouter = patch("main.OpenRouterClient")
-
+        self.patch_github = patch("github_client.GitHubClient")
+        self.patch_openrouter = patch("openrouter_client.OpenRouterClient")
+        
         self.mock_github_class = self.patch_github.start()
         self.mock_openrouter_class = self.patch_openrouter.start()
-
+        
         self.mock_github_instance = self.mock_github_class.return_value
         self.mock_openrouter_instance = self.mock_openrouter_class.return_value
 
@@ -313,7 +313,7 @@ class TestCIRescue(unittest.TestCase):
     def tearDown(self):
         self.patch_github.stop()
         self.patch_openrouter.stop()
-
+    
 
     def test_failure_scenario(self):
         self.assertEqual(1, 2)
@@ -323,7 +323,7 @@ class TestCIRescue(unittest.TestCase):
         with patch.dict(os.environ, {}, clear=True):
             with self.assertRaises(ValueError):
                 CIRescue()
-
+    
     def test_init_success(self):
         """Test successful initialization"""
         with patch.dict(os.environ, self.env_vars):
@@ -341,11 +341,11 @@ class TestCIRescue(unittest.TestCase):
           ]
         }"""
         analysis_text = f"This is the analysis.<<<CI-RESCUE-ANNOTATIONS>>>{valid_annotation_json}<<<CI-RESCUE-ANNOTATIONS>>>"
-
+        
         comment, annotations = self.rescue._parse_analysis_with_annotations(
             analysis_text
         )
-
+        
         self.assertEqual(comment, "This is the analysis.")
         self.assertIsNotNone(annotations)
         self.assertEqual(len(annotations), 1)
@@ -366,7 +366,7 @@ class TestCIRescue(unittest.TestCase):
             '{"annotations": [{"path": "file.py"}]'  # Missing closing brace
         )
         analysis_text = f"Analysis.<<<CI-RESCUE-ANNOTATIONS>>>{malformed_json}<<<CI-RESCUE-ANNOTATIONS>>>"
-
+        
         comment, annotations = self.rescue._parse_analysis_with_annotations(
             analysis_text
         )
@@ -383,7 +383,7 @@ class TestCIRescue(unittest.TestCase):
         mock_pr = Mock()
         mock_pr.number = 123
         self.mock_github_instance.get_pull_request.return_value = mock_pr
-
+        
         # Mock AI response with annotations
         annotation_json = """{
           "annotations": [{"path": "test.py", "start_line": 1, "message": "failure"}]
@@ -396,17 +396,20 @@ class TestCIRescue(unittest.TestCase):
         # Verify that comment and line annotation methods were called
         self.mock_github_instance.post_or_update_comment.assert_called_once()
         self.mock_github_instance.post_line_annotations.assert_called_once()
-
+        
         # Check that the comment includes formatted annotations
         comment_arg = self.mock_github_instance.post_or_update_comment.call_args[0][1]
         self.assertIn("Code Annotations", comment_arg)
         self.assertIn("test.py", comment_arg)
-
-        # Check that the parsed annotations are passed to line annotations
-        annotations_arg = self.mock_github_instance.post_line_annotations.call_args[0][1]
-        self.assertEqual(len(annotations_arg), 1)
-        self.assertEqual(annotations_arg[0]["path"], "test.py")
-
+        
+        # Check that the parsed annotations are passed to line annotations as ReviewComments
+        review_comments_arg = self.mock_github_instance.post_line_annotations.call_args[0][1]
+        self.assertEqual(len(review_comments_arg), 1)
+        self.assertEqual(review_comments_arg[0]["path"], "test.py")
+        self.assertEqual(review_comments_arg[0]["line"], 1)
+        self.assertIn("body", review_comments_arg[0])
+        self.assertIn("CI Rescue Analysis", review_comments_arg[0]["body"])
+        
     def test_format_annotations_for_comment(self):
         """Test formatting annotations for inclusion in PR comment"""
         annotations = [
@@ -417,29 +420,87 @@ class TestCIRescue(unittest.TestCase):
                 "annotation_level": "failure",
             }
         ]
-
+        
         formatted = self.rescue.format_annotations_for_comment(annotations)
-
+        
         self.assertIn("Code Annotations", formatted)
         self.assertIn("test.py", formatted)
         self.assertIn("Line 10", formatted)
         self.assertIn("Test error", formatted)
         self.assertIn("❌", formatted)  # failure emoji
 
+    def test_convert_annotations_to_review_comments(self):
+        """Test converting AI annotations to GitHub ReviewComment format"""  
+        annotations = [
+            {
+                "path": "src/main.py",
+                "start_line": 10,
+                "message": "Test error message",
+                "annotation_level": "failure"
+            },
+            {
+                "path": "src/utils.py", 
+                "line": 25,  # Test fallback to 'line' field
+                "message": "Warning message",
+                "annotation_level": "warning"
+            }
+        ]
+        
+        review_comments = self.rescue.convert_annotations_to_review_comments(annotations)
+        
+        # Verify structure
+        self.assertEqual(len(review_comments), 2)
+        
+        # Test first comment
+        self.assertEqual(review_comments[0]['path'], "src/main.py")
+        self.assertEqual(review_comments[0]['line'], 10)
+        self.assertIn("❌", review_comments[0]['body'])
+        self.assertIn("Test error message", review_comments[0]['body'])
+        
+        # Test second comment  
+        self.assertEqual(review_comments[1]['path'], "src/utils.py")
+        self.assertEqual(review_comments[1]['line'], 25)
+        self.assertIn("⚠️", review_comments[1]['body'])
+        self.assertIn("Warning message", review_comments[1]['body'])
+
+    def test_convert_annotations_validation(self):
+        """Test annotation conversion with invalid data"""
+        # Test annotation without path - should be skipped
+        annotations = [
+            {"start_line": 10, "message": "No path"},
+            {"path": "valid.py", "start_line": 20, "message": "Valid"}
+        ]
+        
+        review_comments = self.rescue.convert_annotations_to_review_comments(annotations)
+        
+        # Only the valid annotation should be converted
+        self.assertEqual(len(review_comments), 1)
+        self.assertEqual(review_comments[0]['path'], "valid.py")
+        
+        # Test invalid line number - should be skipped
+        annotations = [
+            {"path": "test.py", "start_line": "invalid", "message": "Bad line"},
+            {"path": "valid.py", "start_line": 20, "message": "Valid"}
+        ]
+        
+        review_comments = self.rescue.convert_annotations_to_review_comments(annotations)
+        self.assertEqual(len(review_comments), 1)
+        self.assertEqual(review_comments[0]['path'], "valid.py")
+
 
 class TestFailureInfo(unittest.TestCase):
     """Test FailureInfo dataclass"""
-
+    
     def test_creation(self):
         """Test creating FailureInfo instance"""
         failure = FailureInfo(
             job_name="test-job",
             step_name="test-step",
             error_message="test error",
-            logs="test logs",
+            logs="test logs", 
             conclusion="failure",
         )
-
+        
         self.assertEqual(failure.job_name, "test-job")
         self.assertEqual(failure.step_name, "test-step")
         self.assertEqual(failure.error_message, "test error")
