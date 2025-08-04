@@ -4,7 +4,7 @@ GitHub client utilities
 """
 
 import os
-import json
+
 from typing import List, Optional
 from github import Github
 from github.PullRequest import PullRequest
@@ -16,6 +16,7 @@ class GitHubClient:
         self.github_token = github_token
         self.repository = repository
         self.run_id = run_id
+        self.comment_mode = os.getenv("INPUT_COMMENT_MODE", "update-existing")
         self.github = Github(self.github_token)
 
     def get_workflow_run_failures(self) -> List[FailureInfo]:
@@ -89,3 +90,55 @@ class GitHubClient:
         except Exception as e:
             print(f"Error getting pull request: {e}")
             return None
+
+    def post_or_update_comment(self, pr: PullRequest, analysis: str) -> None:
+        """Post or update a comment on the pull request"""
+        comment_marker = "<!-- CI-RESCUE-COMMENT -->"
+        comment_body = f"{comment_marker}\n{analysis}"
+        
+        try:
+            if self.comment_mode == "update-existing":
+                # Look for existing comment
+                comments = pr.get_issue_comments()
+                for comment in comments:
+                    if comment_marker in comment.body:
+                        comment.edit(comment_body)
+                        print(f"Updated existing comment on PR #{pr.number}")
+                        return
+            
+            # Create new comment if no existing one found or mode is create-new
+            pr.create_issue_comment(comment_body)
+            print(f"Created new comment on PR #{pr.number}")
+            
+        except Exception as e:
+            print(f"Error posting comment: {e}")
+
+    def post_line_annotations(self, pr: PullRequest, annotation_comments: List[dict]):
+        """Post line annotations on the pull request"""
+        # Create a review with the comments
+        try:
+            review = pr.create_review(
+                commit=pr.get_commits().reversed[0],  # Latest commit
+                event='COMMENT',
+                comments=annotation_comments
+            )
+            print(f"✅ Posted {len(annotation_comments)} line annotations as review #{review.id}")
+            
+        except Exception as e:
+            print(f"❌ Failed to create review with line comments: {e}")
+            print("🔄 Falling back to individual comments...")
+            
+            # Fallback: Post individual comments
+            for comment_data in annotation_comments:
+                try:
+                    pr.create_review_comment(
+                        body=comment_data['body'],
+                        commit=pr.get_commits().reversed[0],
+                        path=comment_data['path'],
+                        line=comment_data['line']
+                    )
+                    print(f"   ✅ Posted comment on {comment_data['path']}:{comment_data['line']}")
+                except Exception as comment_error:
+                    print(f"   ❌ Failed to post comment on {comment_data['path']}:{comment_data['line']}: {comment_error}")         
+        except Exception as e:
+            print(f"❌ Error posting line annotations: {e}")

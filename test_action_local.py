@@ -22,8 +22,8 @@ def setup_test_environment():
     # GitHub context variables (these are normally set by GitHub Actions)
     # You'll need to adjust these for your specific test case
     os.environ["GITHUB_REPOSITORY"] = "pbitkowski/ci-rescue-action"
-    os.environ["GITHUB_SHA"] = "f8791dcff654e2bf36df2ff64630583e0c71de4c"
-    os.environ["GITHUB_RUN_ID"] = "16603087193"  # From your debug script
+    os.environ["GITHUB_SHA"] = "1fb23e35c7ed04a28893e479a6764d29ccb75dbd"
+    os.environ["GITHUB_RUN_ID"] = "16628675226"  # From your debug script
     os.environ["GITHUB_EVENT_NAME"] = "pull_request"
     
     # Optional: Set up event payload for PR context

@@ -58,7 +58,8 @@ class CIRescue:
 
         if annotations:
             print(f"📌 Adding {len(annotations)} annotations to PR comment summary")
-            comment += self.format_annotations_for_comment(annotations)
+            annotation_comments = self.format_annotations_for_comment(annotations)
+            comment += annotation_comments
         else:
             print("ℹ️  No annotations to add to PR comment")
 

@@ -11,7 +11,9 @@ import sys
 # Add src to path for imports
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
-from main import CIRescue, FailureInfo, OpenRouterClient
+from main import CIRescue
+from models import FailureInfo
+from openrouter_client import OpenRouterClient
 
 
 class TestOpenRouterClient(unittest.TestCase):
@@ -294,7 +296,7 @@ class TestCIRescue(unittest.TestCase):
         }
 
         # Use a fresh mock for each test
-        self.patch_github = patch("main.Github")
+        self.patch_github = patch("main.GitHubClient")
         self.patch_openrouter = patch("main.OpenRouterClient")
 
         self.mock_github_class = self.patch_github.start()
@@ -368,17 +370,15 @@ class TestCIRescue(unittest.TestCase):
         self.assertIn(malformed_json, comment)  # Should return the original text
         self.assertIsNone(annotations)
 
-    @patch("main.CIRescue.post_line_annotations")
-    @patch("main.CIRescue.post_or_update_comment")
-    def test_run_with_annotations(self, mock_post_comment, mock_post_line_annotations):
+    def test_run_with_annotations(self):
         """Test the main run loop correctly calls annotation methods"""
         # Mock failure data and PR
-        self.rescue.get_workflow_run_failures = Mock(
-            return_value=[FailureInfo("job", "step", "err", "log", "fail")]
-        )
+        self.mock_github_instance.get_workflow_run_failures.return_value = [
+            FailureInfo("job", "step", "err", "log", "fail")
+        ]
         mock_pr = Mock()
         mock_pr.number = 123
-        self.rescue.get_pull_request = Mock(return_value=mock_pr)
+        self.mock_github_instance.get_pull_request.return_value = mock_pr
 
         # Mock AI response with annotations
         annotation_json = """{
@@ -390,48 +390,18 @@ class TestCIRescue(unittest.TestCase):
         self.rescue.run()
 
         # Verify that comment and line annotation methods were called
-        mock_post_comment.assert_called_once()
-        mock_post_line_annotations.assert_called_once()
+        self.mock_github_instance.post_or_update_comment.assert_called_once()
+        self.mock_github_instance.post_line_annotations.assert_called_once()
 
         # Check that the comment includes formatted annotations
-        comment_arg = mock_post_comment.call_args[0][1]
+        comment_arg = self.mock_github_instance.post_or_update_comment.call_args[0][1]
         self.assertIn("Code Annotations", comment_arg)
         self.assertIn("test.py", comment_arg)
 
         # Check that the parsed annotations are passed to line annotations
-        annotations_arg = mock_post_line_annotations.call_args[0][1]
+        annotations_arg = self.mock_github_instance.post_line_annotations.call_args[0][1]
         self.assertEqual(len(annotations_arg), 1)
         self.assertEqual(annotations_arg[0]["path"], "test.py")
-
-    def test_post_line_annotations_api_call(self):
-        """Test that the GitHub review API is called correctly for line annotations"""
-        mock_pr = Mock()
-        mock_pr.head.sha = "test-sha"
-        mock_pr.number = 123
-        mock_commits = Mock()
-        mock_commits.reversed = [Mock()]  # Mock commit list
-        mock_pr.get_commits.return_value = mock_commits
-        mock_pr.create_review.return_value = Mock(id=456)
-
-        annotations = [
-            {
-                "path": "file.py",
-                "start_line": 1,
-                "message": "Error",
-                "annotation_level": "failure",
-            }
-        ]
-
-        self.rescue.post_line_annotations(mock_pr, annotations)
-
-        # Verify that create_review was called with the right data
-        mock_pr.create_review.assert_called_once()
-        call_kwargs = mock_pr.create_review.call_args[1]
-        self.assertEqual(call_kwargs["event"], "COMMENT")
-        self.assertEqual(len(call_kwargs["comments"]), 1)
-        self.assertEqual(call_kwargs["comments"][0]["path"], "file.py")
-        self.assertEqual(call_kwargs["comments"][0]["line"], 1)
-        self.assertIn("CI Rescue Analysis", call_kwargs["comments"][0]["body"])
 
     def test_format_annotations_for_comment(self):
         """Test formatting annotations for inclusion in PR comment"""

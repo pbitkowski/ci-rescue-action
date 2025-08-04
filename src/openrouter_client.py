@@ -3,7 +3,6 @@
 OpenRouter Client for analyzing CI failures
 """
 
-from typing import List, Optional
 import requests
 from models import FailureInfo
 
