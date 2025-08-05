@@ -128,43 +128,31 @@ If the failure is related to specific files, provide annotations in a JSON block
             # Fallback to last few lines of logs
             return "\n".join([line.strip() for line in lines[-10:] if line.strip()])
 
-        # Create context ranges (5 lines before and after each error)
-        context_ranges = []
+        # Create separate context blocks for each error (5 lines before and after)
+        context_blocks = []
+        
         for error_idx in error_line_indices:
             start = max(0, error_idx - 5)
             end = min(len(lines), error_idx + 6)  # +6 because range is exclusive
-            context_ranges.append((start, end, error_idx))
-        print(f"🔍 Context ranges: {context_ranges}")
-
-        # Merge overlapping ranges
-        merged_ranges = []
-        if not context_ranges:
-            return
-
-        current_start, current_end, _ = sorted(context_ranges)[0]
-
-        for next_start, next_end, error_idx in sorted(context_ranges)[1:]:
-            if next_start < current_end:  # Merge only if truly overlapping, not adjacent
-                current_end = max(current_end, next_end)
-            else:
-                merged_ranges.append((current_start, current_end, error_idx))
-                current_start, current_end = next_start, next_end
-
-        merged_ranges.append((current_start, current_end, error_idx))
-
-        # Extract context blocks
-        context_blocks = []
-        for start, end, error_idx in merged_ranges:
+            
+            # Extract context for this specific error
             block_lines = []
             for i in range(start, end):
                 if i < len(lines):
-                    block_lines.append(lines[i].rstrip())
-
+                    prefix = ">>> " if i == error_idx else "    "  # Highlight error line
+                    block_lines.append(f"{prefix}{lines[i].rstrip()}")
+            
             if block_lines:
-                context_blocks.append("\n".join(block_lines))
+                # Add header for this error context
+                header = f"[Error Context #{len(context_blocks) + 1} - Line {error_idx + 1}]"
+                context_block = f"{header}\n" + "\n".join(block_lines)
+                context_blocks.append(context_block)
+        
+        print(f"🔍 Found {len(context_blocks)} separate error contexts")
+        
+        # Limit output to avoid overwhelming the AI (max 5 error contexts)
+        if len(context_blocks) > 5:
+            context_blocks = context_blocks[-5:]  # Take the last 5 error contexts
+            print(f"🔍 Limited to {len(context_blocks)} most recent error contexts")
 
-        # Limit output to avoid overwhelming the AI (max 3 context blocks)
-        if len(context_blocks) > 3:
-            context_blocks = context_blocks[-3:]  # Take the last 3 error contexts
-
-        return "\n\n---\n\n".join(context_blocks)
+        return "\n\n" + "="*50 + "\n\n".join([""] + context_blocks) + "\n\n" + "="*50
