@@ -368,8 +368,7 @@ class TestCIRescue(unittest.TestCase):
         self.patch_github.stop()
         self.patch_openrouter.stop()
 
-    def test_failure_scenario(self):
-        self.assertEqual(1, 2)
+
 
 
     def test_filter_failures_by_job_type_test_lint_only(self):
@@ -482,10 +481,12 @@ class TestCIRescue(unittest.TestCase):
         self.mock_github_instance.post_or_update_comment.assert_called_once()
         self.mock_github_instance.post_line_annotations.assert_called_once()
         
-        # Check that the comment includes formatted annotations
+        # Check that the comment includes formatted annotations and job header
         comment_arg = self.mock_github_instance.post_or_update_comment.call_args[0][1]
         self.assertIn("Code Annotations", comment_arg)
         self.assertIn("test.py", comment_arg)
+        self.assertIn("CI Rescue Analysis", comment_arg)  # Main header
+        self.assertIn("Job: test-job", comment_arg)  # Job-specific header
         
         # Check that the parsed annotations are passed to line annotations as ReviewComments
         review_comments_arg = self.mock_github_instance.post_line_annotations.call_args[0][1]
@@ -573,6 +574,63 @@ class TestCIRescue(unittest.TestCase):
         review_comments = self.rescue.convert_annotations_to_review_comments(annotations)
         self.assertEqual(len(review_comments), 1)
         self.assertEqual(review_comments[0]['path'], "valid.py")
+
+    def test_run_with_multiple_failures(self):
+        """Test the main run method with multiple test/lint failures"""
+        # Mock multiple job failures including non-test/lint jobs
+        all_failures = [
+            FailureInfo("lint-check", "eslint", "lint error", "logs", "failure"),
+            FailureInfo("unit-tests", "jest", "test error", "logs", "failure"),  
+            FailureInfo("build", "compile", "build error", "logs", "failure"),
+            FailureInfo("deploy", "upload", "deploy error", "logs", "failure"),
+        ]
+        
+        self.mock_github_instance.get_workflow_run_failures.return_value = all_failures
+        mock_pr = Mock()
+        mock_pr.number = 123
+        mock_pr.title = "Test PR"
+        self.mock_github_instance.get_pull_request.return_value = mock_pr
+        
+        # Mock different AI responses for each job
+        def mock_analyze_failure(failure_info, max_tokens):
+            if failure_info.job_name == "lint-check":
+                return f"Analysis for {failure_info.job_name}: Fix linting issues"
+            elif failure_info.job_name == "unit-tests":
+                annotation_json = '{"annotations": [{"path": "test.py", "start_line": 5, "message": "test failure"}]}'
+                return f"Analysis for {failure_info.job_name}: Fix tests<<<CI-RESCUE-ANNOTATIONS>>>{annotation_json}<<<CI-RESCUE-ANNOTATIONS>>>"
+            return f"Analysis for {failure_info.job_name}"
+        
+        self.mock_openrouter_instance.analyze_failure.side_effect = mock_analyze_failure
+        
+        self.rescue.run()
+        
+        # Should analyze both lint and test failures (2 calls, not build/deploy)
+        self.assertEqual(self.mock_openrouter_instance.analyze_failure.call_count, 2)
+        
+        # Check that both test/lint jobs were analyzed
+        call_args_list = self.mock_openrouter_instance.analyze_failure.call_args_list
+        analyzed_jobs = [call[0][0].job_name for call in call_args_list]
+        self.assertIn("lint-check", analyzed_jobs)
+        self.assertIn("unit-tests", analyzed_jobs)
+        # Should not analyze build or deploy jobs
+        self.assertNotIn("build", analyzed_jobs)
+        self.assertNotIn("deploy", analyzed_jobs)
+        
+        # Check the comprehensive comment structure
+        comment_arg = self.mock_github_instance.post_or_update_comment.call_args[0][1]
+        self.assertIn("CI Rescue Analysis", comment_arg)  # Main header
+        self.assertIn("2 Test/Lint Failure(s)", comment_arg)  # Count in header
+        self.assertIn("Job: lint-check", comment_arg)  # First job header
+        self.assertIn("Job: unit-tests", comment_arg)  # Second job header
+        self.assertIn("Fix linting issues", comment_arg)  # First job analysis
+        self.assertIn("Fix tests", comment_arg)  # Second job analysis
+        
+        # Should have annotations from the unit-tests job
+        self.mock_github_instance.post_line_annotations.assert_called_once()
+        review_comments_arg = self.mock_github_instance.post_line_annotations.call_args[0][1]
+        self.assertEqual(len(review_comments_arg), 1)
+        self.assertEqual(review_comments_arg[0]["path"], "test.py")
+        self.assertEqual(review_comments_arg[0]["line"], 5)
 
 
 class TestFailureInfo(unittest.TestCase):

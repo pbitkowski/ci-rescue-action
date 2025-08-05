@@ -66,28 +66,45 @@ class CIRescue:
 
         print(f"📝 Found PR #{pr.number}: {pr.title}")
 
-        primary_failure = failures[0]
-        print(f"🤖 Analyzing failure in job '{primary_failure.job_name}'...")
-
-        analysis_text = self.openrouter.analyze_failure(primary_failure, self.max_tokens)
-        comment, annotations = self._parse_analysis_with_annotations(analysis_text)
-
-        if annotations:
-            print(f"📌 Adding {len(annotations)} annotations to PR comment summary")
-            annotation_comments = self.format_annotations_for_comment(annotations)
-            comment += annotation_comments
+        # Analyze each failure individually
+        all_analysis_parts = []
+        all_annotations = []
+        
+        for i, failure in enumerate(failures, 1):
+            print(f"🤖 Analyzing failure {i}/{len(failures)} in job '{failure.job_name}'...")
+            
+            analysis_text = self.openrouter.analyze_failure(failure, self.max_tokens)
+            comment_part, annotations = self._parse_analysis_with_annotations(analysis_text)
+            
+            # Add job header to each analysis
+            job_header = f"\n\n## 🚨 **Job: {failure.job_name}** (Step: {failure.step_name})\n\n"
+            full_analysis = job_header + comment_part
+            all_analysis_parts.append(full_analysis)
+            
+            if annotations:
+                print(f"📌 Found {len(annotations)} annotations for job '{failure.job_name}'")
+                all_annotations.extend(annotations)
+            else:
+                print(f"ℹ️  No annotations found for job '{failure.job_name}'")
+        
+        # Combine all analyses into a comprehensive comment
+        main_comment = f"# 🔧 **CI Rescue Analysis** - {len(failures)} Test/Lint Failure(s)\n"
+        main_comment += "".join(all_analysis_parts)
+        
+        # Add annotations summary if we have any
+        if all_annotations:
+            print(f"📌 Adding {len(all_annotations)} total annotations to PR comment summary")
+            annotation_comments = self.format_annotations_for_comment(all_annotations)
+            main_comment += annotation_comments
         else:
             print("ℹ️  No annotations to add to PR comment")
 
-        if len(failures) > 1:
-            comment += self._create_failure_summary(failures)
-
-        print("💬 Posting main PR comment...")
-        self.github.post_or_update_comment(pr, comment)
+        print("💬 Posting comprehensive PR comment...")
+        self.github.post_or_update_comment(pr, main_comment)
         
-        if annotations:
-            print(f"📍 Processing {len(annotations)} annotations for line-level comments...")
-            review_comments = self.convert_annotations_to_review_comments(annotations)
+        if all_annotations:
+            print(f"📍 Processing {len(all_annotations)} annotations for line-level comments...")
+            review_comments = self.convert_annotations_to_review_comments(all_annotations)
             print(f"✅ Converted {len(review_comments)} valid annotations to review comments")
             self.github.post_line_annotations(pr, review_comments)
         else:
