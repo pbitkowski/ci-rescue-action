@@ -225,7 +225,7 @@ class GitHubClient:
 
     def _post_fallback_pr_comments(self, pr, failed_comments):
         """Post individual PR comments with editor links for failed line annotations"""
-        print(f"🔗 Creating fallback PR comments with editor links...")
+        print("🔗 Creating fallback PR comments with editor links...")
         
         # Get repository info for links
         repo_name = pr.base.repo.full_name

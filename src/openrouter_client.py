@@ -143,8 +143,13 @@ If the failure is related to specific files, provide annotations in a JSON block
                     block_lines.append(f"{prefix}{lines[i].rstrip()}")
             
             if block_lines:
-                # Add header for this error context
-                header = f"[Error Context #{len(context_blocks) + 1} - Line {error_idx + 1}]"
+                # Parse traceback for real file:line info, fallback to log line
+                file_line_info = self._parse_traceback_for_file_line(lines, error_idx)
+                if file_line_info:
+                    header = f"[Error Context #{len(context_blocks) + 1} - {file_line_info}]"
+                else:
+                    header = f"[Error Context #{len(context_blocks) + 1} - Log Line {error_idx + 1}]"
+                
                 context_block = f"{header}\n" + "\n".join(block_lines)
                 context_blocks.append(context_block)
         
@@ -156,3 +161,35 @@ If the failure is related to specific files, provide annotations in a JSON block
             print(f"🔍 Limited to {len(context_blocks)} most recent error contexts")
 
         return "\n\n" + "="*50 + "\n\n".join([""] + context_blocks) + "\n\n" + "="*50
+
+    def _parse_traceback_for_file_line(self, lines, error_idx: int):
+        """Parse traceback information to find real file:line references"""
+        import re
+        
+        # Look in surrounding lines for traceback patterns
+        search_start = max(0, error_idx - 10)
+        search_end = min(len(lines), error_idx + 10)
+        
+        # Common traceback patterns:
+        patterns = [
+            r'File "([^"]+)", line (\d+),',  # Python traceback: File "test.py", line 46,
+            r'([^:\s]+):(\d+): (\w+Error)',  # pytest style: tests/test_file.py:46: AssertionError
+            r'([^:\s]+\.py):(\d+)',          # Generic: file.py:123
+            r'at ([^:]+):(\d+):(\d+)',       # JavaScript style: at file.js:46:12
+        ]
+        
+        for i in range(search_start, search_end):
+            if i < len(lines):
+                line = lines[i]
+                for pattern in patterns:
+                    match = re.search(pattern, line)
+                    if match:
+                        if len(match.groups()) >= 2:
+                            file_path = match.group(1)
+                            line_num = match.group(2)
+                            # Clean up file path (remove full paths, keep relative)
+                            if '/' in file_path:
+                                file_path = '/'.join(file_path.split('/')[-2:])  # Keep last 2 parts
+                            return f"File {file_path}:{line_num}"
+        
+        return None

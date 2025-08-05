@@ -371,6 +371,7 @@ class TestCIRescue(unittest.TestCase):
     def test_failure_scenario(self):
         self.assertEqual(1, 2)
 
+
     def test_filter_failures_by_job_type_test_lint_only(self):
         """Test filtering to only include test and lint jobs"""
         failures = [
