@@ -368,8 +368,8 @@ class TestCIRescue(unittest.TestCase):
         self.patch_github.stop()
         self.patch_openrouter.stop()
 
-
-
+    def test_failure_scenario(self):
+        self.assertEqual(1, 2)
 
     def test_filter_failures_by_job_type_test_lint_only(self):
         """Test filtering to only include test and lint jobs"""
