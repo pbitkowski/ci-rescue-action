@@ -161,14 +161,19 @@ class GitHubClient:
             print(f"⚠️  Error cleaning up previous annotations: {e}")
 
     def post_line_annotations(self, pr, review_comments):
-        """Post line annotations on the pull request"""
+        """Post line annotations on the pull request with comprehensive fallback mechanism"""
         if not review_comments:
+            print("📝 No review comments to post")
             return
             
+        print(f"🚀 Starting annotation posting process for {len(review_comments)} comments")
+        
         # Clean up previous CI Rescue annotations first
+        print("🧹 Cleaning up previous CI Rescue annotations...")
         self.remove_previous_ci_rescue_annotations(pr)
         
         # Validate comment structure
+        print("🔍 Validating comment structure...")
         for i, comment in enumerate(review_comments):
             if not isinstance(comment, dict):
                 raise ValueError(f"Review comment {i} must be a dict")
@@ -177,28 +182,104 @@ class GitHubClient:
             if not isinstance(comment['line'], int):
                 raise ValueError(f"Review comment {i} 'line' must be an integer")
         
-        # Create a review with the comments
-        try:
-            review = pr.create_review(
-                commit=pr.get_commits().reversed[0],  # Latest commit
-                event='COMMENT',
-                comments=review_comments
-            )
-            print(f"✅ Posted {len(review_comments)} line annotations as review #{review.id}")
-            
-        except Exception as e:
-            print(f"❌ Failed to create review with line comments: {e}")
-            print("🔄 Falling back to individual comments...")
-            
-            # Fallback: Post individual comments
-            for comment_data in review_comments:
-                try:
-                    pr.create_review_comment(
-                        body=comment_data['body'],
-                        commit=pr.get_commits().reversed[0],
-                        path=comment_data['path'],
-                        line=comment_data['line']
-                    )
-                    print(f"   ✅ Posted comment on {comment_data['path']}:{comment_data['line']}")
-                except Exception as comment_error:
-                    print(f"   ❌ Failed to post comment on {comment_data['path']}:{comment_data['line']}: {comment_error}")
+        print("✅ Comment validation passed")
+        
+        # Strategy 1: Post individual line comments
+        print("📝 Strategy 1: Attempting individual in-line comments...")
+        successful_posts = 0
+        failed_comments = []
+        
+        for i, comment_data in enumerate(review_comments):
+            print(f"   📍 Attempting in-line comment {i+1}/{len(review_comments)}: {comment_data['path']}:{comment_data['line']}")
+            try:
+                pr.create_review_comment(
+                    body=comment_data['body'],
+                    commit=pr.get_commits().reversed[0],
+                    path=comment_data['path'],
+                    line=comment_data['line']
+                )
+                print(f"   ✅ Posted in-line comment on {comment_data['path']}:{comment_data['line']}")
+                successful_posts += 1
+            except Exception as comment_error:
+                error_str = str(comment_error)
+                if "must be part of the diff" in error_str or "422" in error_str:
+                    print(f"   ⚠️  Line {comment_data['line']} in {comment_data['path']} is not part of PR diff - will use fallback")
+                    print(f"   📝 Content preview: {comment_data['body'][:100]}...")
+                else:
+                    print(f"   ⚠️  Failed to post in-line comment on {comment_data['path']}:{comment_data['line']}: {comment_error}")
+                
+                failed_comments.append(comment_data)
+        
+        # Log Strategy 1 results
+        if successful_posts > 0:
+            print(f"✅ Strategy 1 results: Successfully posted {successful_posts} in-line comments")
+        
+        # Strategy 2: Post individual PR comments with editor links for failed annotations
+        if failed_comments:
+            print(f"🔄 Strategy 2: Creating individual PR comments with editor links for {len(failed_comments)} failed annotations...")
+            self._post_fallback_pr_comments(pr, failed_comments)
+        
+        # Final summary
+        total_handled = successful_posts + len(failed_comments)
+        print(f"📊 Final Summary: {successful_posts} in-line comments + {len(failed_comments)} PR comments = {total_handled} total annotations handled")
+
+    def _post_fallback_pr_comments(self, pr, failed_comments):
+        """Post individual PR comments with editor links for failed line annotations"""
+        print(f"🔗 Creating fallback PR comments with editor links...")
+        
+        # Get repository info for links
+        repo_name = pr.base.repo.full_name
+        branch = pr.head.ref
+        
+        successful_fallbacks = 0
+        
+        for i, comment_data in enumerate(failed_comments):
+            try:
+                print(f"   📝 Creating fallback PR comment {i+1}/{len(failed_comments)} for {comment_data['path']}:{comment_data['line']}")
+                
+                # Create editor links
+                file_path = comment_data['path']
+                line_number = comment_data['line']
+                
+                # GitHub.dev link (opens in web editor)
+                github_dev_link = f"https://github.dev/{repo_name}/blob/{branch}/{file_path}#L{line_number}"
+                
+                # Cursor link (opens in Cursor if installed)
+                cursor_link = f"cursor://file/{repo_name}/{file_path}:{line_number}"
+                
+                # VSCode link (opens in VSCode if installed) 
+                vscode_link = f"vscode://file/{repo_name}/{file_path}:{line_number}"
+                
+                # GitHub file link (for reference)
+                github_link = f"https://github.com/{repo_name}/blob/{branch}/{file_path}#L{line_number}"
+                
+                # Create enhanced comment body with editor links
+                fallback_body = f"""
+**🔧 CI Rescue Analysis** (Line-level comment failed - posting as PR comment)
+
+**📁 File:** `{file_path}` **📍 Line:** `{line_number}`
+
+{comment_data['body']}
+
+---
+**🛠️ Quick Edit Links:**
+- 🌐 [**GitHub.dev Editor**]({github_dev_link}) (Opens in browser)
+- 🎯 [**Cursor Editor**]({cursor_link}) (Opens in Cursor app)
+- 📝 [**VSCode Editor**]({vscode_link}) (Opens in VSCode app)  
+- 👁️ [**View on GitHub**]({github_link}) (View file)
+
+*💡 Tip: Use GitHub.dev for quick web-based editing, or click Cursor/VSCode links if you have those editors installed.*
+""".strip()
+
+                # Post the PR comment
+                pr.create_issue_comment(fallback_body)
+                print(f"   ✅ Posted fallback PR comment for {file_path}:{line_number}")
+                successful_fallbacks += 1
+                
+            except Exception as fallback_error:
+                print(f"   ❌ Failed to post fallback PR comment for {comment_data['path']}:{comment_data['line']}: {fallback_error}")
+        
+        if successful_fallbacks > 0:
+            print(f"✅ Strategy 3 results: Successfully posted {successful_fallbacks} fallback PR comments with editor links")
+        else:
+            print("❌ Strategy 3 results: No fallback PR comments could be posted")

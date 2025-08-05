@@ -71,16 +71,14 @@ class TestGitHubClient(unittest.TestCase):
         # Verify that cleanup was called
         mock_pr.get_review_comments.assert_called_once()
         
-        # Verify that create_review was called with the right data
-        mock_pr.create_review.assert_called_once()
-        call_kwargs = mock_pr.create_review.call_args[1]
-        self.assertEqual(call_kwargs["event"], "COMMENT")
-        self.assertEqual(len(call_kwargs["comments"]), 1)
-        self.assertEqual(call_kwargs["comments"][0]["path"], "file.py")
-        self.assertEqual(call_kwargs["comments"][0]["line"], 1)
+        # Verify that individual create_review_comment was called (Strategy 1)
+        mock_pr.create_review_comment.assert_called_once()
+        call_kwargs = mock_pr.create_review_comment.call_args[1]
+        self.assertEqual(call_kwargs["path"], "file.py")
+        self.assertEqual(call_kwargs["line"], 1)
         # Import the constant for testing
         from constants import CI_ANNOTATION_MARKER
-        self.assertIn(CI_ANNOTATION_MARKER, call_kwargs["comments"][0]["body"])
+        self.assertIn(CI_ANNOTATION_MARKER, call_kwargs["body"])
 
     @patch("requests.get")
     def test_get_workflow_run_failures(self, mock_get):
@@ -166,6 +164,78 @@ class TestGitHubClient(unittest.TestCase):
         mock_comment1.delete.assert_called_once()
         mock_comment3.delete.assert_called_once()
         mock_comment2.delete.assert_not_called()  # Should not delete non-CI-Rescue comments
+
+    def test_post_line_annotations_diff_validation_error(self):
+        """Test handling of 'line must be part of diff' error"""
+        mock_pr = Mock()
+        mock_pr.get_review_comments.return_value = []
+        mock_pr.get_commits.return_value.reversed = [Mock()]
+        mock_pr.base.repo.full_name = "owner/repo"
+        mock_pr.head.ref = "feature-branch"
+        
+        # Mock individual comment creation - one succeeds, one fails due to diff
+        def mock_create_review_comment(**kwargs):
+            if kwargs['line'] == 1:
+                return Mock()  # Success
+            else:
+                raise Exception("pull_request_review_thread.line must be part of the diff")
+        
+        mock_pr.create_review_comment.side_effect = mock_create_review_comment
+        
+        review_comments = [
+            {"path": "file1.py", "line": 1, "body": "Valid comment"},
+            {"path": "file2.py", "line": 999, "body": "Invalid line comment"}
+        ]
+        
+        # Should not raise exception, should handle gracefully
+        self.client.post_line_annotations(mock_pr, review_comments)
+        
+        # Verify Strategy 1: individual line comments were attempted
+        self.assertEqual(mock_pr.create_review_comment.call_count, 2)
+        
+        # Verify Strategy 2: fallback PR comment was created for the failed one
+        self.assertEqual(mock_pr.create_issue_comment.call_count, 1)
+
+    def test_fallback_pr_comments_with_editor_links(self):
+        """Test fallback Strategy 2 that creates PR comments with editor links"""
+        mock_pr = Mock()
+        mock_pr.get_review_comments.return_value = []
+        mock_pr.get_commits.return_value.reversed = [Mock()]
+        mock_pr.base.repo.full_name = "owner/repo"
+        mock_pr.head.ref = "feature-branch"
+        
+        # Mock all in-line comments to fail so we get to Strategy 2 fallback
+        mock_pr.create_review_comment.side_effect = Exception("line must be part of the diff")
+        
+        review_comments = [
+            {"path": "src/main.py", "line": 42, "body": "**CI Rescue Analysis**: Fix this issue"},
+            {"path": "tests/test.py", "line": 123, "body": "**CI Rescue Analysis**: Add test case"}
+        ]
+        
+        # Should not raise exception, should create fallback PR comments
+        self.client.post_line_annotations(mock_pr, review_comments)
+        
+        # Verify Strategy 1: in-line comments were attempted
+        self.assertEqual(mock_pr.create_review_comment.call_count, 2)
+        
+        # Verify Strategy 2: fallback PR comments were created
+        self.assertEqual(mock_pr.create_issue_comment.call_count, 2)
+        
+        # Check the first fallback comment content
+        first_call_args = mock_pr.create_issue_comment.call_args_list[0][0][0]
+        self.assertIn("🔧 CI Rescue Analysis", first_call_args)
+        self.assertIn("src/main.py", first_call_args)
+        self.assertIn("**📍 Line:** `42`", first_call_args)
+        self.assertIn("https://github.dev/owner/repo/blob/feature-branch/src/main.py#L42", first_call_args)
+        self.assertIn("cursor://file/owner/repo/src/main.py:42", first_call_args)
+        self.assertIn("vscode://file/owner/repo/src/main.py:42", first_call_args)
+        self.assertIn("Fix this issue", first_call_args)
+        
+        # Check the second fallback comment content
+        second_call_args = mock_pr.create_issue_comment.call_args_list[1][0][0]
+        self.assertIn("tests/test.py", second_call_args)
+        self.assertIn("**📍 Line:** `123`", second_call_args)
+        self.assertIn("Add test case", second_call_args)
 
 
 if __name__ == "__main__":

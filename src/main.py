@@ -67,10 +67,16 @@ class CIRescue:
         if len(failures) > 1:
             comment += self._create_failure_summary(failures)
 
+        print("💬 Posting main PR comment...")
         self.github.post_or_update_comment(pr, comment)
+        
         if annotations:
+            print(f"📍 Processing {len(annotations)} annotations for line-level comments...")
             review_comments = self.convert_annotations_to_review_comments(annotations)
+            print(f"✅ Converted {len(review_comments)} valid annotations to review comments")
             self.github.post_line_annotations(pr, review_comments)
+        else:
+            print("📝 No annotations to process for line-level comments")
 
         print("✅ Analysis complete!")
 
