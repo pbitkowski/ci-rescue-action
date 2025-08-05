@@ -10,6 +10,7 @@ from typing import List, Optional
 from github_client import GitHubClient
 from openrouter_client import OpenRouterClient
 from models import FailureInfo
+from constants import CI_ANNOTATION_MARKER
 
 
 class CIRescue:
@@ -20,6 +21,9 @@ class CIRescue:
         self.openrouter_api_key = os.getenv("INPUT_OPENROUTER_API_KEY")
         self.model = os.getenv("INPUT_MODEL", "openai/gpt-4o-mini")
         self.max_tokens = int(os.getenv("INPUT_MAX_TOKENS", "1000"))
+        
+        # Job filtering - only analyze test and lint failures
+        self.job_filter = ["test", "lint"]
 
         # GitHub context
         self.repository = os.getenv("GITHUB_REPOSITORY")
@@ -35,13 +39,25 @@ class CIRescue:
     def run(self) -> None:
         """Main execution method"""
         print("🔍 CI Rescue starting analysis...")
+        
+        print("🎯 Analyzing test and lint failures only")
 
         failures = self.github.get_workflow_run_failures()
         if not failures:
             print("✅ No failures detected in this workflow run")
             return
 
-        print(f"🚨 Found {len(failures)} failure(s)")
+        print(f"🚨 Found {len(failures)} total failure(s)")
+        
+        # Apply job filtering for test and lint only
+        original_count = len(failures)
+        failures = self._filter_failures_by_job_type(failures)
+        if len(failures) != original_count:
+            print(f"🔽 Filtered to {len(failures)} test/lint failure(s) from {original_count} total failures")
+        
+        if not failures:
+            print("✅ No test or lint failures found")
+            return
 
         pr = self.github.get_pull_request()
         if not pr:
@@ -50,28 +66,67 @@ class CIRescue:
 
         print(f"📝 Found PR #{pr.number}: {pr.title}")
 
-        primary_failure = failures[0]
-        print(f"🤖 Analyzing failure in job '{primary_failure.job_name}'...")
-
-        analysis_text = self.openrouter.analyze_failure(primary_failure, self.max_tokens)
-        comment, annotations = self._parse_analysis_with_annotations(analysis_text)
-
-        if annotations:
-            print(f"📌 Adding {len(annotations)} annotations to PR comment summary")
-            annotation_comments = self.format_annotations_for_comment(annotations)
-            comment += annotation_comments
+        # Analyze each failure individually
+        all_analysis_parts = []
+        all_annotations = []
+        
+        for i, failure in enumerate(failures, 1):
+            print(f"🤖 Analyzing failure {i}/{len(failures)} in job '{failure.job_name}'...")
+            
+            analysis_text = self.openrouter.analyze_failure(failure, self.max_tokens)
+            comment_part, annotations = self._parse_analysis_with_annotations(analysis_text)
+            
+            # Add job header to each analysis
+            job_header = f"\n\n## 🚨 **Job: {failure.job_name}** (Step: {failure.step_name})\n\n"
+            full_analysis = job_header + comment_part
+            all_analysis_parts.append(full_analysis)
+            
+            if annotations:
+                print(f"📌 Found {len(annotations)} annotations for job '{failure.job_name}'")
+                all_annotations.extend(annotations)
+            else:
+                print(f"ℹ️  No annotations found for job '{failure.job_name}'")
+        
+        # Combine all analyses into a comprehensive comment
+        main_comment = f"# 🔧 **CI Rescue Analysis** - {len(failures)} Test/Lint Failure(s)\n"
+        main_comment += "".join(all_analysis_parts)
+        
+        # Add annotations summary if we have any
+        if all_annotations:
+            print(f"📌 Adding {len(all_annotations)} total annotations to PR comment summary")
+            annotation_comments = self.format_annotations_for_comment(all_annotations)
+            main_comment += annotation_comments
         else:
             print("ℹ️  No annotations to add to PR comment")
 
-        if len(failures) > 1:
-            comment += self._create_failure_summary(failures)
-
-        self.github.post_or_update_comment(pr, comment)
-        if annotations:
-            review_comments = self.convert_annotations_to_review_comments(annotations)
+        print("💬 Posting comprehensive PR comment...")
+        self.github.post_or_update_comment(pr, main_comment)
+        
+        if all_annotations:
+            print(f"📍 Processing {len(all_annotations)} annotations for line-level comments...")
+            review_comments = self.convert_annotations_to_review_comments(all_annotations)
+            print(f"✅ Converted {len(review_comments)} valid annotations to review comments")
             self.github.post_line_annotations(pr, review_comments)
+        else:
+            print("📝 No annotations to process for line-level comments")
 
         print("✅ Analysis complete!")
+
+    def _filter_failures_by_job_type(self, failures: List[FailureInfo]) -> List[FailureInfo]:
+        """Filter failures to only include test and lint job types"""
+        filtered_failures = []
+        
+        for failure in failures:
+            job_name_lower = failure.job_name.lower()
+            
+            # Check if job name contains test or lint
+            if "test" in job_name_lower or "lint" in job_name_lower:
+                print(f"✅ Including job: {failure.job_name}")
+                filtered_failures.append(failure)
+            else:
+                print(f"⏭️  Skipping job: {failure.job_name} (not test/lint)")
+        
+        return filtered_failures
 
     def _parse_analysis_with_annotations(self, analysis_text: str) -> (str, Optional[List[dict]]):
         """Parse the AI response to separate the comment from annotations."""
@@ -138,7 +193,7 @@ class CIRescue:
             review_comment = {
                 'path': path,
                 'line': line,
-                'body': f"{level_emoji} **CI Rescue Analysis**\n\n{message}"
+                'body': f"{level_emoji} **{CI_ANNOTATION_MARKER}**\n\n{message}"
             }
             
             review_comments.append(review_comment)
@@ -190,12 +245,14 @@ class CIRescue:
 
 
 def main():
-    """Entry point"""
+    """Entry point for CI Rescue"""
     try:
         rescue = CIRescue()
         rescue.run()
     except Exception as e:
         print(f"❌ CI Rescue failed: {e}")
+        import traceback
+        traceback.print_exc()
         sys.exit(1)
 
 

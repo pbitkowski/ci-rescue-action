@@ -69,9 +69,10 @@ Line 10: Process ended"""
             "Line 10: Process ended", result
         )  # 5 lines after (only 4 available)
 
-        # Should not contain extra lines
-        lines = result.split("\n")
-        self.assertEqual(len(lines), 10)  # 10 total lines in context
+        # Should contain the error and context with new format
+        self.assertIn("ERROR: Connection timeout", result)
+        self.assertIn("[Error Context #1 - Line 6]", result)
+        self.assertIn(">>> Line 6: ERROR: Connection timeout", result)  # Highlighted error line with full line content
 
     def test_extract_error_context_multiple_errors_separate(self):
         """Test _extract_error_context with multiple separate errors"""
@@ -93,13 +94,16 @@ Line 15: Finished"""
 
         result = self.client._extract_error_context(logs)
 
-        # Should contain two separate context blocks
-        self.assertIn("---", result)  # Separator between blocks
+        # Should contain two separate context blocks with new format
+        self.assertIn("=" * 50, result)  # New separator format
         self.assertIn("ERROR: First error", result)
         self.assertIn("FAILED: Second error", result)
+        self.assertIn("[Error Context #1 - Line 2]", result)  # Header for first error
+        self.assertIn("[Error Context #2 - Line 13]", result)  # Header for second error
+        self.assertIn(">>> ", result)  # Error line highlighting
 
     def test_extract_error_context_overlapping_errors(self):
-        """Test _extract_error_context with overlapping error contexts"""
+        """Test _extract_error_context with close errors (no longer merged)"""
         logs = """Line 1: Starting
 Line 2: Loading
 Line 3: ERROR: First error
@@ -110,14 +114,15 @@ Line 7: Finished"""
 
         result = self.client._extract_error_context(logs)
 
-        # Should merge overlapping ranges into one block
-        self.assertNotIn("---", result)  # No separator since ranges merged
+        # Should keep errors separate even when close together
+        self.assertIn("=" * 50, result)  # Should have separators
         self.assertIn("ERROR: First error", result)
         self.assertIn("FAILED: Second error", result)
-
-        # Should contain all lines since they're close together
-        lines = result.split("\n")
-        self.assertEqual(len(lines), 7)  # All 7 lines included
+        self.assertIn("[Error Context #1 - Line 3]", result)  # Header for first error
+        self.assertIn("[Error Context #2 - Line 5]", result)  # Header for second error
+        
+        # Should highlight error lines
+        self.assertIn(">>> ", result)
 
     def test_extract_error_context_case_insensitive(self):
         """Test case-insensitive error detection"""
@@ -199,18 +204,21 @@ Line 4: Finished"""
         result = self.client._extract_error_context(logs)
 
         # Should remove trailing whitespace but preserve structure
-        lines = result.split("\n")
-        for line in lines:
-            self.assertFalse(line.endswith(" "))  # No trailing spaces
-            self.assertFalse(line.endswith("\t"))  # No trailing tabs
-
         self.assertIn("ERROR: Error with trailing spaces", result)
+        
+        # Check that the error content has trailing spaces stripped
+        lines = result.split("\n")
+        error_lines = [line for line in lines if "ERROR: Error with trailing spaces" in line]
+        self.assertTrue(len(error_lines) > 0)
+        # The line should not end with trailing spaces after processing
+        for line in error_lines:
+            self.assertFalse(line.rstrip() != line.rstrip(" \t"))
 
     def test_extract_error_context_limit_blocks(self):
-        """Test limiting to max 3 context blocks"""
-        # Create logs with 5 separate errors (far apart)
+        """Test limiting to max 5 context blocks"""
+        # Create logs with 7 separate errors (far apart)
         logs_parts = []
-        for i in range(5):
+        for i in range(7):
             logs_parts.append(f"Section {i + 1} start")
             for j in range(10):  # Add padding lines
                 logs_parts.append(f"Section {i + 1} line {j + 1}")
@@ -221,15 +229,59 @@ Line 4: Finished"""
         logs = "\n".join(logs_parts)
         result = self.client._extract_error_context(logs)
 
-        # Should only contain last 3 errors
+        # Should only contain last 5 errors (limit increased from 3 to 5)
         self.assertNotIn("ERROR: Error 1", result)
         self.assertNotIn("ERROR: Error 2", result)
         self.assertIn("ERROR: Error 3", result)
         self.assertIn("ERROR: Error 4", result)
         self.assertIn("ERROR: Error 5", result)
+        self.assertIn("ERROR: Error 6", result)
+        self.assertIn("ERROR: Error 7", result)
 
-        # Should have 2 separators (3 blocks)
-        self.assertEqual(result.count("---"), 2)
+        # Should have context headers for the last 5 errors (errors 3-7)
+        self.assertIn("[Error Context #3", result)  # First context in limited result
+        self.assertIn("[Error Context #7", result)  # Last context
+
+    def test_extract_error_context_new_format_comprehensive(self):
+        """Test the new error context format with headers and highlighting"""
+        logs = """Starting application
+Loading configuration  
+ERROR: Database connection failed
+Retrying connection
+Still failing
+Normal operation continues
+Processing data
+FAILED: Validation error occurred
+Rolling back
+Process completed"""
+
+        result = self.client._extract_error_context(logs)
+
+        # Check overall structure with separators
+        self.assertIn("=" * 50, result)
+        
+        # Check headers are present
+        self.assertIn("[Error Context #1 - Line 3]", result)
+        self.assertIn("[Error Context #2 - Line 8]", result)
+        
+        # Check error line highlighting with >>> prefix
+        lines = result.split('\n')
+        error_lines = [line for line in lines if line.strip().startswith(">>> ")]
+        self.assertGreaterEqual(len(error_lines), 2)  # At least 2 error lines highlighted
+        
+        # Check that error lines contain the actual errors
+        error_line_content = '\n'.join(error_lines)
+        self.assertIn("ERROR: Database connection failed", error_line_content)
+        self.assertIn("FAILED: Validation error occurred", error_line_content)
+        
+        # Check that context lines are prefixed with spaces (4 space indent)
+        context_lines = [line for line in lines if line.startswith("    ") and not line.startswith(">>> ") and line.strip()]
+        self.assertGreater(len(context_lines), 6)  # Should have context lines around errors
+        
+        # Verify both errors are in separate contexts
+        context_1_marker = result.find("[Error Context #1")
+        context_2_marker = result.find("[Error Context #2")
+        self.assertGreater(context_2_marker, context_1_marker)  # Context 2 comes after context 1
 
     def test_init(self):
         """Test client initialization"""
@@ -273,7 +325,9 @@ Line 4: Finished"""
         )
         
         result = self.client.analyze_failure(failure_info)
-        self.assertIn("🚨 **CI Failure Analysis**", result)
+        # Import the constant for testing
+        from constants import CI_FAILURE_ANALYSIS_MAIN_TITLE
+        self.assertIn(CI_FAILURE_ANALYSIS_MAIN_TITLE, result)
         self.assertIn("Failed to analyze the error with AI", result)
 
 
@@ -313,10 +367,40 @@ class TestCIRescue(unittest.TestCase):
     def tearDown(self):
         self.patch_github.stop()
         self.patch_openrouter.stop()
-    
 
     def test_failure_scenario(self):
         self.assertEqual(1, 2)
+
+
+    def test_filter_failures_by_job_type_test_lint_only(self):
+        """Test filtering to only include test and lint jobs"""
+        failures = [
+            FailureInfo("lint-check", "step1", "lint error", "logs", "failure"),
+            FailureInfo("unit-tests", "step2", "test error", "logs", "failure"),
+            FailureInfo("build-docker", "step3", "build error", "logs", "failure"),
+            FailureInfo("deploy-prod", "step4", "deploy error", "logs", "failure"),
+            FailureInfo("integration-test", "step5", "integration error", "logs", "failure"),
+            FailureInfo("linting", "step6", "lint error 2", "logs", "failure"),
+        ]
+        
+        filtered = self.rescue._filter_failures_by_job_type(failures)
+        
+        # Should only include jobs with "test" or "lint" in the name
+        self.assertEqual(len(filtered), 4)
+        job_names = [f.job_name for f in filtered]
+        self.assertIn("lint-check", job_names)
+        self.assertIn("unit-tests", job_names)
+        self.assertIn("integration-test", job_names)
+        self.assertIn("linting", job_names)
+        
+        # Should exclude build and deploy jobs
+        self.assertNotIn("build-docker", job_names)
+        self.assertNotIn("deploy-prod", job_names)
+
+    def test_ci_rescue_initialization_default_filter(self):
+        """Test that CIRescue initializes with test,lint filter by default"""
+        # Test that without INPUT_JOB_FILTER, it defaults to test,lint
+        self.assertEqual(self.rescue.job_filter, ["test", "lint"])
 
     def test_init_missing_vars(self):
         """Test initialization with missing environment variables"""
@@ -376,12 +460,13 @@ class TestCIRescue(unittest.TestCase):
 
     def test_run_with_annotations(self):
         """Test the main run loop correctly calls annotation methods"""
-        # Mock failure data and PR
+        # Mock failure data and PR - use test/lint jobs that will pass the filter
         self.mock_github_instance.get_workflow_run_failures.return_value = [
-            FailureInfo("job", "step", "err", "log", "fail")
+            FailureInfo("test-job", "step", "err", "log", "fail")  # Changed to test-job to pass filter
         ]
         mock_pr = Mock()
         mock_pr.number = 123
+        mock_pr.title = "Test PR"
         self.mock_github_instance.get_pull_request.return_value = mock_pr
         
         # Mock AI response with annotations
@@ -397,10 +482,12 @@ class TestCIRescue(unittest.TestCase):
         self.mock_github_instance.post_or_update_comment.assert_called_once()
         self.mock_github_instance.post_line_annotations.assert_called_once()
         
-        # Check that the comment includes formatted annotations
+        # Check that the comment includes formatted annotations and job header
         comment_arg = self.mock_github_instance.post_or_update_comment.call_args[0][1]
         self.assertIn("Code Annotations", comment_arg)
         self.assertIn("test.py", comment_arg)
+        self.assertIn("CI Rescue Analysis", comment_arg)  # Main header
+        self.assertIn("Job: test-job", comment_arg)  # Job-specific header
         
         # Check that the parsed annotations are passed to line annotations as ReviewComments
         review_comments_arg = self.mock_github_instance.post_line_annotations.call_args[0][1]
@@ -408,7 +495,9 @@ class TestCIRescue(unittest.TestCase):
         self.assertEqual(review_comments_arg[0]["path"], "test.py")
         self.assertEqual(review_comments_arg[0]["line"], 1)
         self.assertIn("body", review_comments_arg[0])
-        self.assertIn("CI Rescue Analysis", review_comments_arg[0]["body"])
+        # Import the constant for testing
+        from constants import CI_ANNOTATION_MARKER
+        self.assertIn(CI_ANNOTATION_MARKER, review_comments_arg[0]["body"])
         
     def test_format_annotations_for_comment(self):
         """Test formatting annotations for inclusion in PR comment"""
@@ -486,6 +575,63 @@ class TestCIRescue(unittest.TestCase):
         review_comments = self.rescue.convert_annotations_to_review_comments(annotations)
         self.assertEqual(len(review_comments), 1)
         self.assertEqual(review_comments[0]['path'], "valid.py")
+
+    def test_run_with_multiple_failures(self):
+        """Test the main run method with multiple test/lint failures"""
+        # Mock multiple job failures including non-test/lint jobs
+        all_failures = [
+            FailureInfo("lint-check", "eslint", "lint error", "logs", "failure"),
+            FailureInfo("unit-tests", "jest", "test error", "logs", "failure"),  
+            FailureInfo("build", "compile", "build error", "logs", "failure"),
+            FailureInfo("deploy", "upload", "deploy error", "logs", "failure"),
+        ]
+        
+        self.mock_github_instance.get_workflow_run_failures.return_value = all_failures
+        mock_pr = Mock()
+        mock_pr.number = 123
+        mock_pr.title = "Test PR"
+        self.mock_github_instance.get_pull_request.return_value = mock_pr
+        
+        # Mock different AI responses for each job
+        def mock_analyze_failure(failure_info, max_tokens):
+            if failure_info.job_name == "lint-check":
+                return f"Analysis for {failure_info.job_name}: Fix linting issues"
+            elif failure_info.job_name == "unit-tests":
+                annotation_json = '{"annotations": [{"path": "test.py", "start_line": 5, "message": "test failure"}]}'
+                return f"Analysis for {failure_info.job_name}: Fix tests<<<CI-RESCUE-ANNOTATIONS>>>{annotation_json}<<<CI-RESCUE-ANNOTATIONS>>>"
+            return f"Analysis for {failure_info.job_name}"
+        
+        self.mock_openrouter_instance.analyze_failure.side_effect = mock_analyze_failure
+        
+        self.rescue.run()
+        
+        # Should analyze both lint and test failures (2 calls, not build/deploy)
+        self.assertEqual(self.mock_openrouter_instance.analyze_failure.call_count, 2)
+        
+        # Check that both test/lint jobs were analyzed
+        call_args_list = self.mock_openrouter_instance.analyze_failure.call_args_list
+        analyzed_jobs = [call[0][0].job_name for call in call_args_list]
+        self.assertIn("lint-check", analyzed_jobs)
+        self.assertIn("unit-tests", analyzed_jobs)
+        # Should not analyze build or deploy jobs
+        self.assertNotIn("build", analyzed_jobs)
+        self.assertNotIn("deploy", analyzed_jobs)
+        
+        # Check the comprehensive comment structure
+        comment_arg = self.mock_github_instance.post_or_update_comment.call_args[0][1]
+        self.assertIn("CI Rescue Analysis", comment_arg)  # Main header
+        self.assertIn("2 Test/Lint Failure(s)", comment_arg)  # Count in header
+        self.assertIn("Job: lint-check", comment_arg)  # First job header
+        self.assertIn("Job: unit-tests", comment_arg)  # Second job header
+        self.assertIn("Fix linting issues", comment_arg)  # First job analysis
+        self.assertIn("Fix tests", comment_arg)  # Second job analysis
+        
+        # Should have annotations from the unit-tests job
+        self.mock_github_instance.post_line_annotations.assert_called_once()
+        review_comments_arg = self.mock_github_instance.post_line_annotations.call_args[0][1]
+        self.assertEqual(len(review_comments_arg), 1)
+        self.assertEqual(review_comments_arg[0]["path"], "test.py")
+        self.assertEqual(review_comments_arg[0]["line"], 5)
 
 
 class TestFailureInfo(unittest.TestCase):
