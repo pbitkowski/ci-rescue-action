@@ -21,6 +21,9 @@ class CIRescue:
         self.openrouter_api_key = os.getenv("INPUT_OPENROUTER_API_KEY")
         self.model = os.getenv("INPUT_MODEL", "openai/gpt-4o-mini")
         self.max_tokens = int(os.getenv("INPUT_MAX_TOKENS", "1000"))
+        
+        # Job filtering - only analyze test and lint failures
+        self.job_filter = ["test", "lint"]
 
         # GitHub context
         self.repository = os.getenv("GITHUB_REPOSITORY")
@@ -36,13 +39,25 @@ class CIRescue:
     def run(self) -> None:
         """Main execution method"""
         print("🔍 CI Rescue starting analysis...")
+        
+        print("🎯 Analyzing test and lint failures only")
 
         failures = self.github.get_workflow_run_failures()
         if not failures:
             print("✅ No failures detected in this workflow run")
             return
 
-        print(f"🚨 Found {len(failures)} failure(s)")
+        print(f"🚨 Found {len(failures)} total failure(s)")
+        
+        # Apply job filtering for test and lint only
+        original_count = len(failures)
+        failures = self._filter_failures_by_job_type(failures)
+        if len(failures) != original_count:
+            print(f"🔽 Filtered to {len(failures)} test/lint failure(s) from {original_count} total failures")
+        
+        if not failures:
+            print("✅ No test or lint failures found")
+            return
 
         pr = self.github.get_pull_request()
         if not pr:
@@ -79,6 +94,22 @@ class CIRescue:
             print("📝 No annotations to process for line-level comments")
 
         print("✅ Analysis complete!")
+
+    def _filter_failures_by_job_type(self, failures: List[FailureInfo]) -> List[FailureInfo]:
+        """Filter failures to only include test and lint job types"""
+        filtered_failures = []
+        
+        for failure in failures:
+            job_name_lower = failure.job_name.lower()
+            
+            # Check if job name contains test or lint
+            if "test" in job_name_lower or "lint" in job_name_lower:
+                print(f"✅ Including job: {failure.job_name}")
+                filtered_failures.append(failure)
+            else:
+                print(f"⏭️  Skipping job: {failure.job_name} (not test/lint)")
+        
+        return filtered_failures
 
     def _parse_analysis_with_annotations(self, analysis_text: str) -> (str, Optional[List[dict]]):
         """Parse the AI response to separate the comment from annotations."""
@@ -197,12 +228,14 @@ class CIRescue:
 
 
 def main():
-    """Entry point"""
+    """Entry point for CI Rescue"""
     try:
         rescue = CIRescue()
         rescue.run()
     except Exception as e:
         print(f"❌ CI Rescue failed: {e}")
+        import traceback
+        traceback.print_exc()
         sys.exit(1)
 
 
